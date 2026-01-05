@@ -74,6 +74,6 @@ def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float) -
 
 
 if __name__ == "__main__":
-    q_neutral = np.array([-0.0, -0.785398, 0.0, -2.356194, 0.0, 1.570796, 0.785398])
+    q_neutral = np.array([-0.0, -0.785398, 0.0, -2.356194, 0.0, 1.570796, -0.14])
     with BambooFrankaClient(server_ip="128.30.224.88") as rob:
         goto_joint_angles(rob, q_neutral, 5)
