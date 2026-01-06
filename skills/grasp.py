@@ -2,8 +2,7 @@ import numpy as np
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-from bamboo.bamboo_client import BambooFrankaClient
+from bamboo.client import BambooFrankaClient
 from skills.skills_config import intrinsics, X_GC
 from skills.go_to_conf import goto_hand_position
 
