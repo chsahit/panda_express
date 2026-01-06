@@ -1,14 +1,10 @@
 import logging
 import numpy as np
-import sys
 from pathlib import Path
 import roboticstoolbox as rtb
 from spatialmath import SE3
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent))
-
-from bamboo.bamboo_client import BambooFrankaClient
+from bamboo.client import BambooFrankaClient
 
 # Load the robot model from URDF
 URDF_PATH = Path(__file__).parent / "fr3_robotiq_2f_85.urdf"
