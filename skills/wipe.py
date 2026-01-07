@@ -1,3 +1,4 @@
+import json
 import numpy as np
 from PIL import Image
 
@@ -28,11 +29,11 @@ def get_bbox_from_gemini(
 ) -> list[int]:
     """
     Query Gemini VLM to get the bbox coordinates corresponding to the query.
-    
+
     Args:
         vlm_query_str: Prompt asking Gemini to identify the spill
         pil_image: PIL Image to analyze
-    
+
     Returns:
         List of [ymin, xmin, ymax, xmax] in pixel coordinates
     """
@@ -70,7 +71,7 @@ def get_bbox_from_gemini(
         if not (isinstance(bbox, list) and len(bbox) == 4):
             raise ValueError("'bbox' must be a list of 4 numbers [ymin, xmin, ymax, xmax].")
         return [float(v) for v in bbox]
-    
+
     # Query the VLM
     print(f'vlm: {vlm}, the query string is: {vlm_query_str}')
     vlm_output_list = vlm.sample_completions(
@@ -82,7 +83,7 @@ def get_bbox_from_gemini(
     )
     vlm_output_str = vlm_output_list[0]
     print(f'vlm_output_str: {vlm_output_str}')
-    
+
     # Parse bbox and convert from normalized [0-1000] to pixel coordinates
     ymin_n, xmin_n, ymax_n, xmax_n = _parse_bbox_list(vlm_output_str)
     img_height = pil_image.height
@@ -97,7 +98,7 @@ def get_bbox_from_gemini(
     xmin = max(0, min(xmin, img_width - 1))
     ymax = max(0, min(ymax, img_height - 1))
     xmax = max(0, min(xmax, img_width - 1))
-    
+
     bbox = [ymin, xmin, ymax, xmax]
     return bbox
 
@@ -150,17 +151,16 @@ def _compute_wipe_params_from_bbox_zed(
     p_tr = (int(xmax), int(ymin))
     p_bl = (int(xmin), int(ymax))
 
-    P_br = pixel_to_world_zed(*p_br, depth_m, K_zed, T_world_zed)
-    P_tr = pixel_to_world_zed(*p_tr, depth_m, K_zed, T_world_zed)
-    P_bl = pixel_to_world_Zed(*p_bl, depth_m, K_zed, T_world_zed)
+    P_br = pixel_to_world_xyz(*p_br, depth_m, K_zed, T_world_zed)
+    P_tr = pixel_to_world_xyz(*p_tr, depth_m, K_zed, T_world_zed)
+    P_bl = pixel_to_world_xyz(*p_bl, depth_m, K_zed, T_world_zed)
 
 
-	# wipe_start_rotation = R.from_euler('y', np.pi/2 - 0.087)
+    # wipe_start_rotation = R.from_euler('y', np.pi/2 - 0.087)
     wipe_start_rotation = np.array([[1.0, 0.0, 0.0], [0.0, -1, 0], [-0.0, 0, -1.0]])
-	wipe_start_pose = np.eye(4)
+    wipe_start_pose = np.eye(4)
     wipe_start_pose[:3, :3] = wipe_start_rotation
     wipe_start_pose[:3, 3] = P_br + np.array([0, 0, clearance])
-	
 
     # Stroke direction (up)
     up_vec = P_tr - P_br
@@ -183,9 +183,10 @@ def _compute_wipe_params_from_bbox_zed(
         side_dir = side_vec[:2] / width_m
     else:
         side_dir = np.array([0.0, 0.0])
-    delta_x_y_between_strokes = (
+    delta_x_y_z_between_strokes = (
         float(side_dir[0] * spacing_m),
         float(side_dir[1] * spacing_m),
+        0.0
     )
     num_strokes = max(1, int(np.ceil(width_m / max(spacing_m, 1e-3))) + 1)
 
@@ -197,7 +198,7 @@ def _compute_wipe_params_from_bbox_zed(
         wipe_start_pose,
         stroke_dx,
         stroke_dy,
-        delta_x_y_between_strokes,
+        delta_x_y_z_between_strokes,
         num_strokes,
         end_look_pose,
     )
@@ -210,14 +211,14 @@ def wipe_multiple_strokes(
     end_look_pose: np.ndarray,
     stroke_dx: float,
     stroke_dy: float,
-    delta_x_y_between_strokes: np.ndarray,
+    delta_x_y_z_between_strokes: np.ndarray,
     num_strokes: int,
     duration_per_stroke: float,
     num_attempts_per_stroke: int,
 ):
     """
     Execute multiple wipe strokes. After each stroke (and attempts) the start pose
-    is shifted by delta_x_y_between_strokes in BODY frame.
+    is shifted by delta_x_y_z_between_strokes in BODY frame.
     """
     curr = wipe_start_pose
     for _ in range(num_strokes):
@@ -228,59 +229,58 @@ def wipe_multiple_strokes(
             goto_hand_position(robot, curr, duration_per_stroke)
         # Shift to next stroke start
         # ASSUME delta_x_y_between strokes is shape (3, )
-        curr = _add_offset(curr, delta_x_y_between_strokes)
+        curr = _add_offset(curr, delta_x_y_z_between_strokes)
     # End look pose
     goto_hand_position(robot, end_look_pose, 5.0)
 
 
 def wipe_online(
         robot: BambooFrankaClient,
-        rbg_image: np.ndarray,
+        rgb_image: np.ndarray,
         depth_img: np.ndarray,
-        extrinsics: np.ndarray, 
-        intrinsics: np.ndarray, 
-        vlm_query_template: str = DEFAULT_VLM_QUERY_TEMPLATE,
+        extrinsics: np.ndarray,
+        intrinsics: np.ndarray,
+        vlm_query_template: str = DEFAULT_WIPE_VLM_QUERY_TEMPLATE,
         z_offset: float = DEFAULT_WIPE_ONLINE_Z_OFFSET,
         expand_percentage: float = 0.0
 ):
-	rgb_pil = Image.from_array(rgb_image)
-	depth_m = depth_img.astype(np.float32)
-	# Run VLM on the full-resolution RGB image and get bbox in RGB pixel coordinates.
-	bbox = get_bbox_from_gemini(vlm_query_template, rgb_pil)
-	print(f"The coordinates of the bounding box (RGB space) are: {bbox}")
+    rgb_pil = Image.fromarray(rgb_image)
+    depth_m = depth_img.astype(np.float32)
+    # Run VLM on the full-resolution RGB image and get bbox in RGB pixel coordinates.
+    bbox = get_bbox_from_gemini(vlm_query_template, rgb_pil)
+    print(f"The coordinates of the bounding box (RGB space) are: {bbox}")
 
-	# Optionally expand bbox in image space by a percentage along all directions
-	if expand_percentage and expand_percentage > 0.0:
-		ymin, xmin, ymax, xmax = bbox
-		H, W = depth_img.shape[0], depth_img.shape[1]
-		height_px = max(1, (ymax - ymin))
-		width_px = max(1, (xmax - xmin))
-		dy = int(round(0.5 * expand_percentage * height_px))
-		dx = int(round(0.5 * expand_percentage * width_px))
-		ymin_exp = max(0, ymin - dy)
-		ymax_exp = min(H - 1, ymax + dy)
-		xmin_exp = max(0, xmin - dx)
-		xmax_exp = min(W - 1, xmax + dx)
-		bbox = [ymin_exp, xmin_exp, ymax_exp, xmax_exp]
-		print(f"Expanded bbox by {expand_percentage*100:.1f}% -> {bbox}")
+    # Optionally expand bbox in image space by a percentage along all directions
+    if expand_percentage and expand_percentage > 0.0:
+        ymin, xmin, ymax, xmax = bbox
+        H, W = depth_img.shape[0], depth_img.shape[1]
+        height_px = max(1, (ymax - ymin))
+        width_px = max(1, (xmax - xmin))
+        dy = int(round(0.5 * expand_percentage * height_px))
+        dx = int(round(0.5 * expand_percentage * width_px))
+        ymin_exp = max(0, ymin - dy)
+        ymax_exp = min(H - 1, ymax + dy)
+        xmin_exp = max(0, xmin - dx)
+        xmax_exp = min(W - 1, xmax + dx)
+        bbox = [ymin_exp, xmin_exp, ymax_exp, xmax_exp]
+        print(f"Expanded bbox by {expand_percentage*100:.1f}% -> {bbox}")
 
-	(
-		wipe_start_pose,
-		stroke_dx,
-		stroke_dy,
-		delta_x_y_between_strokes,
-		num_strokes,
-		end_look_pose,
-	) = _compute_wipe_params_from_bbox_iphone(
-		bbox,
-		depth_m,
-		intrinsics,
-		extrinsics,
-		clearance=z_offset,
-		spacing_m=0.05,
-		max_stroke_len=0.35,
-	)
-		
+    (
+        wipe_start_pose,
+        stroke_dx,
+        stroke_dy,
+        delta_x_y_z_between_strokes,
+        num_strokes,
+        end_look_pose,
+    ) = _compute_wipe_params_from_bbox_zed(
+        bbox,
+        depth_m,
+        intrinsics,
+        extrinsics,
+        clearance=z_offset,
+        spacing_m=0.05,
+        max_stroke_len=0.35,
+    )
 
     wipe_multiple_strokes(
         robot=robot,
@@ -288,19 +288,18 @@ def wipe_online(
         end_look_pose=end_look_pose,
         stroke_dx=stroke_dx + 0.05,
         stroke_dy=stroke_dy,
-        delta_x_y_between_strokes=delta_x_y_between_strokes,
+        delta_x_y_z_between_strokes=delta_x_y_z_between_strokes,
         num_strokes=num_strokes,
         duration_per_stroke=1.5,
         num_attempts_per_stroke=1,
     )
-		
 
 
 if __name__ == "__main__":
     with BambooFrankaClient(server_ip="128.30.224.88") as rob:
         stroke_dx = 0.15
         stroke_dy = 0.0
-        delta_x_y_between_strokes = np.array([0, 0.05, 0.0])
+        delta_x_y_z_between_strokes = np.array([0, 0.05, 0.0])
         start_pose = np.array([[1.0, 0.0, 0.0, 0.4], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.6], [0, 0, 0, 1]])
         wipe_multiple_strokes(
             rob,
@@ -308,7 +307,7 @@ if __name__ == "__main__":
             start_pose,
             stroke_dx,
             stroke_dy,
-            delta_x_y_between_strokes,
+            delta_x_y_z_between_strokes,
             4,
             1.0,
             1
