@@ -89,7 +89,7 @@ def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float) -
     solution = robot_model.ik_LM(
         T_target,
         q0=q_current[:7],  # Use current arm joint positions as initial guess
-        end="panda_link7",  # Target the flange frame (robot mounting flange)
+        end="panda_link8",  # Target the end-effector frame (same as kEndEffector in libfranka)
         mask=[1, 1, 1, 1, 1, 1]  # Full 6-DOF constraint (x, y, z, roll, pitch, yaw)
     )
 

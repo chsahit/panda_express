@@ -19,22 +19,23 @@ class ZedCamera:
         if serial_number is not None:
             assert self.zed.get_camera_information().serial_number == serial_number
 
+        # Create persistent buffers for this camera instance
+        self._image_buffer = sl.Mat()
+        self._depth_buffer = sl.Mat()
+        self._runtime_params = sl.RuntimeParameters()
+
         self.get_bgra_frame()
         self.get_depth_frame()
 
     def get_bgra_frame(self) -> np.ndarray:
-        image = sl.Mat()
-        runtime_params = sl.RuntimeParameters()
-        if self.zed.grab(runtime_params) <= sl.ERROR_CODE.SUCCESS:
-            self.zed.retrieve_image(image, sl.VIEW.LEFT)
-        return image.get_data()
+        if self.zed.grab(self._runtime_params) <= sl.ERROR_CODE.SUCCESS:
+            self.zed.retrieve_image(self._image_buffer, sl.VIEW.LEFT)
+        return self._image_buffer.get_data()
 
     def get_depth_frame(self) -> np.ndarray:
-        image = sl.Mat()
-        runtime_params = sl.RuntimeParameters()
-        if self.zed.grab(runtime_params) <= sl.ERROR_CODE.SUCCESS:
-            self.zed.retrieve_measure(image, sl.MEASURE.DEPTH)
-        return image.get_data()
+        if self.zed.grab(self._runtime_params) <= sl.ERROR_CODE.SUCCESS:
+            self.zed.retrieve_measure(self._depth_buffer, sl.MEASURE.DEPTH)
+        return self._depth_buffer.get_data()
 
     def get_intrinsics(self) -> tuple[np.ndarray, np.ndarray]:
         """Returns camera matrix and distortion coefficients."""
