@@ -186,3 +186,4 @@ robot_config.yaml
 third_party/grpc
 
 *.whl
+calibration_data/

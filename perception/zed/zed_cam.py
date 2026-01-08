@@ -19,25 +19,32 @@ class ZedCamera:
         if serial_number is not None:
             assert self.zed.get_camera_information().serial_number == serial_number
 
-    def get_rgb_frame(self) -> np.ndarray:
+        self.get_bgra_frame()
+        self.get_depth_frame()
+
+    def get_bgra_frame(self) -> np.ndarray:
         image = sl.Mat()
         runtime_params = sl.RuntimeParameters()
         if self.zed.grab(runtime_params) <= sl.ERROR_CODE.SUCCESS:
-            self.zed.retrieve_image(image, sl.VIEW_LEFT)
+            self.zed.retrieve_image(image, sl.VIEW.LEFT)
         return image.get_data()
 
     def get_depth_frame(self) -> np.ndarray:
         image = sl.Mat()
         runtime_params = sl.RuntimeParameters()
         if self.zed.grab(runtime_params) <= sl.ERROR_CODE.SUCCESS:
-            self.zed.retrieve_measire(image, sl.MEASURE_DEPTH)
+            self.zed.retrieve_measure(image, sl.MEASURE.DEPTH)
         return image.get_data()
 
-    def get_rgbd_frame(self) -> np.ndarray:
-        rgb = self.get_rbg_frame()
-        d = self.get_depth_frame()
-        return np.concatenate([rgb, d])
-
+    def get_intrinsics(self) -> tuple[np.ndarray, np.ndarray]:
+        """Returns camera matrix and distortion coefficients."""
+        camera_info = self.zed.get_camera_information()
+        calibration_params = camera_info.camera_configuration.calibration_parameters.left_cam
+        camera_matrix = np.array([[calibration_params.fx, 0, calibration_params.cx],
+                                  [0, calibration_params.fy, calibration_params.cy],
+                                  [0, 0, 1]])
+        dist_coeffs = np.array(calibration_params.disto)
+        return camera_matrix, dist_coeffs
 
     def close(self):
         self.zed.close()

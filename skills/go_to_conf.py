@@ -59,7 +59,7 @@ def goto_joint_angles(robot: BambooFrankaClient, q: np.ndarray, time: float) -> 
     return 0
 
 
-def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float) -> None:
+def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float) -> int:
 
     s_current = rob.get_joint_states()
     q_current = np.array(s_current["qpos"])
@@ -96,7 +96,7 @@ def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float) -
     if solution[1]:
         q_next = solution[0]
         print(f"{q_next=}")
-        goto_joint_angles(rob, q_next, time)
+        return goto_joint_angles(rob, q_next, time)
     else:
         print(f"IK solution failed: {solution}")
         raise RuntimeError("Failed to find IK solution")
