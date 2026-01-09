@@ -13,7 +13,7 @@ from typing import Collection, Dict, List, Optional, Union
 
 import google.generativeai as genai
 import imagehash
-import openai
+# import openai
 import PIL.Image
 from tenacity import retry, stop_after_attempt, wait_random_exponential
 

@@ -9,6 +9,7 @@ from bamboo.client import BambooFrankaClient
 # Load the robot model from URDF
 URDF_PATH = Path(__file__).parent / "fr3_robotiq_2f_85.urdf"
 robot_model = rtb.Robot.URDF(str(URDF_PATH))
+TOP_DOWN_GRASP_ROT = np.array([[1.0, 0.0, 0.0], [0.0, -1, 0], [-0.0, 0, -1.0]])
 
 
 def goto_joint_angles(robot: BambooFrankaClient, q: np.ndarray, time: float) -> int:
@@ -18,13 +19,9 @@ def goto_joint_angles(robot: BambooFrankaClient, q: np.ndarray, time: float) -> 
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
-    print("Creating BambooFrankaClient...")
-
     try:
         # Get current joint angles
-        print("\nGetting current joint angles...")
         current_joints = robot.get_joint_positions()
-        print(f"Current joint angles: {[f'{q:.4f}' for q in current_joints]}")
 
         waypoints = [current_joints]
         dt = 0.02
@@ -39,7 +36,6 @@ def goto_joint_angles(robot: BambooFrankaClient, q: np.ndarray, time: float) -> 
         result = robot.execute_joint_impedance_path(np.array(waypoints), durations=durations)
 
         # Get final joint positions to calculate error
-        print("\nGetting final joint angles...")
         final_joints = robot.get_joint_positions()
         print(f"Final joint angles: {[f'{q:.4f}' for q in final_joints]}")
 
@@ -64,7 +60,6 @@ def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float) -
     s_current = rob.get_joint_states()
     q_current = np.array(s_current["qpos"])
     X_current = s_current["ee_pose"]
-    print(f"{X_current=}")
 
     # Ensure X_WG is a proper 4x4 float64 contiguous array for SE3
     X_WG_clean = np.asarray(X_WG, dtype=np.float64, order='C')
@@ -95,7 +90,6 @@ def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float) -
 
     if solution[1]:
         q_next = solution[0]
-        print(f"{q_next=}")
         return goto_joint_angles(rob, q_next, time)
     else:
         print(f"IK solution failed: {solution}")

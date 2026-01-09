@@ -187,3 +187,5 @@ third_party/grpc
 
 *.whl
 calibration_data/
+cache-fixme/
+push_buttom_images/

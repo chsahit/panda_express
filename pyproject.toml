@@ -33,6 +33,8 @@ dependencies = [
     "pyzmq>=22.0.0",
     "roboticstoolbox-python",
     "opencv-contrib-python==4.11.0.86",
+    "google-generativeai",
+    "ImageHash",
 ]
 
 [project.optional-dependencies]
