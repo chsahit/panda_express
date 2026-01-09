@@ -1,17 +1,21 @@
+import os
 import json
 import numpy as np
+from datetime import datetime
 from PIL import Image
+import cv2
 
 from bamboo.client import BambooFrankaClient
+from perception.zed.zed_cam import ZedCamera
 from perception.utils import pixel_to_world_xyz
 from scipy.spatial.transform import Rotation as R
-from skills.go_to_conf import goto_hand_position
+from skills.go_to_conf import goto_hand_position, TOP_DOWN_GRASP_ROT
 from skills.utils.pretrained_model_interface import GoogleGeminiVLM
 
 
-DEFAULT_WIPE_ONLINE_Z_OFFSET = 0.08
+DEFAULT_WIPE_ONLINE_Z_OFFSET = 0.175
 DEFAULT_WIPE_VLM_QUERY_TEMPLATE = (
-    "You are given an image. Identify the spill region (liquid/food spill/stain) if present.\n"
+    "You are given an image. Identify the word SPILL written on a whiteboard if present.\n"
     "Return a bounding box that tightly encloses the spill region.\n"
     "If there is no spill visible or it is ambiguous, return a bbox of null.\n\n"
     'Output format (return EXACTLY one JSON object and nothing else):\n'
@@ -127,7 +131,7 @@ def _compute_wipe_params_from_bbox_zed(
     # wipe_start_rotation = R.from_euler('y', np.pi/2 - 0.087)
     wipe_start_rotation = np.array([[1.0, 0.0, 0.0], [0.0, -1, 0], [-0.0, 0, -1.0]])
     wipe_start_pose = np.eye(4)
-    wipe_start_pose[:3, :3] = wipe_start_rotation
+    wipe_start_pose[:3, :3] = TOP_DOWN_GRASP_ROT
     wipe_start_pose[:3, 3] = P_br + np.array([0, 0, clearance])
 
     # Stroke direction (up)
@@ -159,7 +163,7 @@ def _compute_wipe_params_from_bbox_zed(
     num_strokes = max(1, int(np.ceil(width_m / max(spacing_m, 1e-3))) + 1)
 
     end_look_pose = np.eye(4)
-    end_look_pose[:3, :3] = wipe_start_rotation
+    end_look_pose[:3, :3] = TOP_DOWN_GRASP_ROT
     end_look_pose[:3, 3] = np.array([0.4, 0.0, 0.5])
 
     return (
@@ -213,6 +217,14 @@ def wipe_online(
         expand_percentage: float = 0.0
 ):
     rgb_pil = Image.fromarray(rgb_image)
+
+    # save rgb for logging
+    save_folderpath = "wipe_spill_images"
+    os.makedirs(save_folderpath, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ## save the rgb and the depth image to the disk
+    rgb_pil.save(os.path.join(save_folderpath, f"rgb_{timestamp}.png"))
+
     depth_m = depth_img.astype(np.float32)
     # Run VLM on the full-resolution RGB image and get bbox in RGB pixel coordinates.
     bbox = get_bbox_from_gemini(vlm_query_template, rgb_pil)
@@ -264,6 +276,7 @@ def wipe_online(
 
 
 if __name__ == "__main__":
+    """
     with BambooFrankaClient(server_ip="128.30.224.88") as rob:
         stroke_dx = 0.15
         stroke_dy = 0.0
@@ -280,4 +293,14 @@ if __name__ == "__main__":
             1.0,
             1
         )
+    """
+    cam = ZedCamera(serial_number=35317039)
+    bgra = cam.get_bgra_frame()
+    rgb = cv2.cvtColor(bgra, cv2.COLOR_BGRA2RGB)
+    depth = cam.get_depth_frame()
+    K = cam.get_intrinsics()[0]
+    cam.close()
+    extrinsics = np.load("perception/zed/X_WE.npy")
+    with BambooFrankaClient(server_ip="128.30.224.88") as rob:
+        wipe_online(rob, rgb, depth, extrinsics, K)
 

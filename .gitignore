@@ -188,4 +188,5 @@ third_party/grpc
 *.whl
 calibration_data/
 cache-fixme/
-push_buttom_images/
+push_button_images/
+wipe_skill_images/

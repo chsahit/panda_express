@@ -153,7 +153,7 @@ def push_button(
     X_Wsetpoint1 = np.eye(4)
     X_Wsetpoint1[:3, :3] = TOP_DOWN_GRASP_ROT
     X_Wsetpoint1[:3, 3] = center_xyz + np.array([0.0, 0.0, z_clearance])
-    print("EXECUTING SKILL, {X_Wsetpoint1=}")
+    print(f"EXECUTING SKILL, {X_Wsetpoint1=}")
     robot.close_gripper()
     goto_hand_position(robot, X_Wsetpoint1, 5.0)
     X_Wsetpoint2 = np.copy(X_Wsetpoint1)
