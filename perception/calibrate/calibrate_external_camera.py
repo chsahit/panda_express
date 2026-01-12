@@ -16,7 +16,7 @@ E: External Camera Frame
 For each board position i:
 
   - X_WT = X_WG @ X_GC @ X_CT
-  - X_WE = X_WT @ X_TE 
+  - X_WE = X_WT @ X_TE
 
 We compute this for all positions and average to get a robust estimate.
 """
@@ -24,18 +24,14 @@ We compute this for all positions and average to get a robust estimate.
 import cv2
 import numpy as np
 import os
+import argparse
 from datetime import datetime
 from skills.go_to_conf import goto_hand_position
 from bamboo.client import BambooFrankaClient
 from scipy.spatial.transform import Rotation as R
 from perception.zed.zed_cam import ZedCamera
+from perception.realsense.realsense_cam import RealSenseCamera
 from glob import glob
-
-# ============================================================================
-# Configuration
-# ============================================================================
-WRIST_CAMERA_SERIAL = 16779706
-EXTERNAL_CAMERA_SERIAL = 35317039
 
 NUM_SAMPLES = 20
 
@@ -150,168 +146,184 @@ def average_transforms(transforms):
 # Main Calibration Script
 # ============================================================================
 
-print("="*80)
-print("External Camera Calibration")
-print("="*80)
-print("\nThis script will calibrate the external camera relative to the robot base.")
-print("Instructions:")
-print("  1. Keep the robot in its current position (DO NOT MOVE IT)")
-print("  2. Manually move the ChArUco board to different positions")
-print("  3. Ensure both cameras can see the board at each position")
-print("  4. Press SPACE to capture when ready, 'q' to finish early")
-print("="*80)
+def main():
+    parser = argparse.ArgumentParser(description='Calibrate external camera relative to robot base')
+    parser.add_argument('--calib-path', type=str, default='perception/zed/camera_to_gripper_extrinsics.npy',
+                        help='Path to wrist camera calibration file')
+    parser.add_argument('--external-serial', type=int, default=35317039,
+                        help='External ZED camera serial number')
+    parser.add_argument('--server-ip', type=str, default='128.30.224.88',
+                        help='Bamboo server IP address')
+    parser.add_argument('--wrist-camera-type', type=str, default='zed', choices=['realsense', 'zed'],
+                        help='Wrist camera type')
+    args = parser.parse_args()
 
-# Load hand-eye calibration for wrist camera
-X_GC = np.load("perception/zed/camera_to_gripper_extrinsics.npy")
-print(f"Loaded wrist camera calibration")
-print(f"{X_GC=}")
-
-# Initialize cameras and robot
-print("\nInitializing robot and cameras...")
-client = BambooFrankaClient(server_ip="128.30.224.88")
-X_WG = np.array([[1.0, 0.0, 0.0, 0.3], [0.0, -1, 0.0, 0.2], [0.0, 0.0, -1.0, 0.7], [0, 0, 0, 1.0]])
-X_GG2 = np.eye(4)
-X_GG2[:3, :3] = R.from_euler('xyz', [np.pi/6, 0, 0], degrees=False).as_matrix()
-goto_hand_position(client, X_WG @ X_GG2, 3)
-wrist_camera = ZedCamera(serial_number=WRIST_CAMERA_SERIAL)
-wrist_cam_matrix, wrist_dist_coeffs = wrist_camera.get_intrinsics()
-
-external_camera = ZedCamera(serial_number=EXTERNAL_CAMERA_SERIAL)
-external_cam_matrix, external_dist_coeffs = external_camera.get_intrinsics()
-
-# Get robot's current (fixed) pose
-X_WG = np.array(client.get_joint_states()['ee_pose'])
-X_WG = np.array(client.get_joint_states()['ee_pose'])
-
-print(f"\nRobot gripper pose (KEEP FIXED):")
-print(X_WG)
-
-# Compute base to wrist camera transform
-X_WC = X_WG @ X_GC
-print(f"{X_WC=}")
-
-# Create save directory
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-save_dir = f"calibration_data/external_camera_calib_{timestamp}"
-os.makedirs(save_dir, exist_ok=True)
-print(f"\nSaving data to: {save_dir}")
-
-# Data collection
-X_WTs_all = []
-X_TEs_all = []
-sample_idx = 0
-
-print("\n" + "="*80)
-print("Ready to collect samples!")
-print("Move the board to a new position, then press SPACE to capture")
-print("Press 'q' when done (or after 20 samples)")
-print("="*80 + "\n")
-
-try:
-    while sample_idx < NUM_SAMPLES:
-        # Capture from both cameras
-        wrist_image = wrist_camera.get_bgra_frame()
-        external_image = external_camera.get_bgra_frame()
-
-        # Detect board in wrist camera
-        wrist_detection = detect_board_pose(wrist_image, wrist_cam_matrix, wrist_dist_coeffs)
-
-        # Detect board in external camera
-        external_detection = detect_board_pose(external_image, external_cam_matrix, external_dist_coeffs)
-
-        # Show visualization
-        wrist_viz = cv2.cvtColor(wrist_image, cv2.COLOR_BGRA2BGR)
-        external_viz = cv2.cvtColor(external_image, cv2.COLOR_BGRA2BGR)
-
-        # Add status text
-        wrist_status = "Wrist: DETECTED" if wrist_detection else "Wrist: NOT DETECTED"
-        external_status = "External: DETECTED" if external_detection else "External: NOT DETECTED"
-
-        color = (0, 255, 0) if (wrist_detection and external_detection) else (0, 0, 255)
-        cv2.putText(wrist_viz, wrist_status, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-        cv2.putText(external_viz, external_status, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-        cv2.putText(wrist_viz, f"Samples: {sample_idx}/{NUM_SAMPLES}", (20, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        cv2.putText(external_viz, "Press SPACE to capture, 'q' to quit", (20, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-
-        # Display
-        cv2.imshow("Wrist Camera", wrist_viz)
-        cv2.imshow("External Camera", external_viz)
-
-        key = cv2.waitKey(1) & 0xFF
-
-        if key == ord('q'):
-            print("\nUser requested quit")
-            break
-        elif key == ord(' '):  # Spacebar
-            if wrist_detection and external_detection:
-                # Extract detections
-                R_target2wrist, t_target2wrist = wrist_detection
-                X_CT = transform_to_matrix(R_target2wrist, t_target2wrist)
-                R_target2external, t_target2external = external_detection
-                X_ET = transform_to_matrix(R_target2external, t_target2external)
-                X_WTs_all.append(X_WC @ X_CT)
-                X_TEs_all.append(np.linalg.inv(X_ET))
-
-
-                # Save images
-                cv2.imwrite(os.path.join(save_dir, f"wrist_{sample_idx:03d}.png"), wrist_image)
-                cv2.imwrite(os.path.join(save_dir, f"external_{sample_idx:03d}.png"), external_image)
-
-                sample_idx += 1
-                print(f"Captured sample {sample_idx}/{NUM_SAMPLES}")
-            else:
-                print("Board not detected in both cameras! Move board and try again.")
-
-    print("\n" + "="*80)
-    print("Data collection complete!")
+    print("="*80)
+    print("External Camera Calibration")
+    print("="*80)
+    print("\nThis script will calibrate the external camera relative to the robot base.")
+    print("Instructions:")
+    print("  1. Keep the robot in its current position (DO NOT MOVE IT)")
+    print("  2. Manually move the ChArUco board to different positions")
+    print("  3. Ensure both cameras can see the board at each position")
+    print("  4. Press SPACE to capture when ready, 'q' to finish early")
     print("="*80)
 
-    if len(X_WTs_all) < 5:
-        raise RuntimeError(f"Not enough samples: {len(X_WTs_all)} < 5")
+    X_GC = np.load(args.calib_path)
+    print(f"Loaded wrist camera calibration from {args.calib_path}")
+    print(f"{X_GC=}")
 
-    # Compute base to external camera transform for each sample
-    print(f"\nComputing base-to-external transform from {len(X_WTs_all)} samples...")
+    print("\nInitializing robot and cameras...")
+    client = BambooFrankaClient(server_ip=args.server_ip, enable_gripper=False)
+    X_WG = np.array([[1.0, 0.0, 0.0, 0.3], [0.0, -1, 0.0, 0.2], [0.0, 0.0, -1.0, 0.7], [0, 0, 0, 1.0]])
+    X_GG2 = np.eye(4)
+    X_GG2[:3, :3] = R.from_euler('xyz', [np.pi/6, 0, 0], degrees=False).as_matrix()
+    # goto_hand_position(client, X_WG @ X_GG2, 3)
 
-    X_WEs_all = []
-    for i in range(len(X_WTs_all)):
-        X_WT = X_WTs_all[i]
-        X_TE = X_TEs_all[i]
-        X_WE = X_WT @ X_TE
-        X_WEs_all.append(X_WE)
+    if args.wrist_camera_type == 'realsense':
+        wrist_camera = RealSenseCamera(serial_number="231122071284")
+    else:
+        wrist_camera = ZedCamera(serial_number=16779706)
+    wrist_cam_matrix, wrist_dist_coeffs = wrist_camera.get_intrinsics()
 
-    # Average all transforms
-    X_WE_avg = average_transforms(X_WEs_all)
+    external_camera = ZedCamera(serial_number=args.external_serial)
+    external_cam_matrix, external_dist_coeffs = external_camera.get_intrinsics()
 
-    # Compute statistics
-    translations = [T[:3, 3] for T in X_WEs_all]
-    t_std = np.std(translations, axis=0)
-    print(f"\nTranslation std dev: {t_std} (should be < 0.01 for good calibration)")
+    X_WG = np.array(client.get_joint_states()['ee_pose'])
+    X_WG = np.array(client.get_joint_states()['ee_pose'])
 
-    # Save result
-    result_path = os.path.join(save_dir, "X_WE.npy")
-    np.save(result_path, X_WE_avg)
+    print(f"\nRobot gripper pose (KEEP FIXED):")
+    print(X_WG)
+
+    X_WC = X_WG @ X_GC
+    print(f"{X_WC=}")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_dir = f"calibration_data/external_camera_calib_{timestamp}"
+    os.makedirs(save_dir, exist_ok=True)
+    print(f"\nSaving data to: {save_dir}")
+
+    X_WTs_all = []
+    X_TEs_all = []
+    sample_idx = 0
+
+    # Flag for mouse click capture
+    capture_requested = False
+
+    def mouse_callback(event, x, y, flags, param):
+        nonlocal capture_requested
+        if event == cv2.EVENT_LBUTTONDOWN:
+            capture_requested = True
 
     print("\n" + "="*80)
-    print("Calibration Complete!")
-    print("="*80)
-    print(f"\n External Camera Transform:")
-    print(X_WE_avg)
-    print(f"\nTranslation: {X_WE_avg[:3, 3]}")
-    print(f"Rotation (euler XYZ): {R.from_matrix(X_WE_avg[:3, :3]).as_euler('xyz', degrees=True)} degrees")
-    print(f"\nSaved to: {result_path}")
+    print("Ready to collect samples!")
+    print("Move the board to a new position, then press SPACE or CLICK to capture")
+    print("Press 'q' when done (or after 20 samples)")
+    print("="*80 + "\n")
 
-except KeyboardInterrupt:
-    print("\nInterrupted by user")
-except Exception as e:
-    print(f"\nERROR: {e}")
-    import traceback
-    traceback.print_exc()
-finally:
-    cv2.destroyAllWindows()
-    client.close()
-    wrist_camera.close()
-    if EXTERNAL_CAMERA_SERIAL is not None:
+    # Set up mouse callbacks for both windows
+    cv2.namedWindow("Wrist Camera")
+    cv2.namedWindow("External Camera")
+    cv2.setMouseCallback("Wrist Camera", mouse_callback)
+    cv2.setMouseCallback("External Camera", mouse_callback)
+
+    try:
+        while sample_idx < NUM_SAMPLES:
+            wrist_image = wrist_camera.get_bgra_frame()
+            external_image = external_camera.get_bgra_frame()
+
+            wrist_detection = detect_board_pose(wrist_image, wrist_cam_matrix, wrist_dist_coeffs)
+            external_detection = detect_board_pose(external_image, external_cam_matrix, external_dist_coeffs)
+
+            wrist_viz = cv2.cvtColor(wrist_image, cv2.COLOR_BGRA2BGR)
+            external_viz = cv2.cvtColor(external_image, cv2.COLOR_BGRA2BGR)
+
+            wrist_status = "Wrist: DETECTED" if wrist_detection else "Wrist: NOT DETECTED"
+            external_status = "External: DETECTED" if external_detection else "External: NOT DETECTED"
+
+            color = (0, 255, 0) if (wrist_detection and external_detection) else (0, 0, 255)
+            cv2.putText(wrist_viz, wrist_status, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+            cv2.putText(external_viz, external_status, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+            cv2.putText(wrist_viz, f"Samples: {sample_idx}/{NUM_SAMPLES}", (20, 80),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            cv2.putText(external_viz, "Press SPACE or CLICK to capture, 'q' to quit", (20, 80),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+            cv2.imshow("Wrist Camera", wrist_viz)
+            cv2.imshow("External Camera", external_viz)
+
+            key = cv2.waitKey(1) & 0xFF
+
+            if key == ord('q'):
+                print("\nUser requested quit")
+                break
+            elif key == ord(' ') or capture_requested:
+                if capture_requested:
+                    capture_requested = False  # Reset flag
+
+                if wrist_detection and external_detection:
+                    R_target2wrist, t_target2wrist = wrist_detection
+                    X_CT = transform_to_matrix(R_target2wrist, t_target2wrist)
+                    R_target2external, t_target2external = external_detection
+                    X_ET = transform_to_matrix(R_target2external, t_target2external)
+                    X_WTs_all.append(X_WC @ X_CT)
+                    X_TEs_all.append(np.linalg.inv(X_ET))
+
+                    cv2.imwrite(os.path.join(save_dir, f"wrist_{sample_idx:03d}.png"), wrist_image)
+                    cv2.imwrite(os.path.join(save_dir, f"external_{sample_idx:03d}.png"), external_image)
+
+                    sample_idx += 1
+                    print(f"Captured sample {sample_idx}/{NUM_SAMPLES}")
+                else:
+                    print("Board not detected in both cameras! Move board and try again.")
+
+        print("\n" + "="*80)
+        print("Data collection complete!")
+        print("="*80)
+
+        if len(X_WTs_all) < 5:
+            raise RuntimeError(f"Not enough samples: {len(X_WTs_all)} < 5")
+
+        print(f"\nComputing base-to-external transform from {len(X_WTs_all)} samples...")
+
+        X_WEs_all = []
+        for i in range(len(X_WTs_all)):
+            X_WT = X_WTs_all[i]
+            X_TE = X_TEs_all[i]
+            X_WE = X_WT @ X_TE
+            X_WEs_all.append(X_WE)
+
+        X_WE_avg = average_transforms(X_WEs_all)
+
+        translations = [T[:3, 3] for T in X_WEs_all]
+        t_std = np.std(translations, axis=0)
+        print(f"\nTranslation std dev: {t_std} (should be < 0.01 for good calibration)")
+
+        result_path = os.path.join(save_dir, "X_WE.npy")
+        np.save(result_path, X_WE_avg)
+
+        print("\n" + "="*80)
+        print("Calibration Complete!")
+        print("="*80)
+        print(f"\n External Camera Transform:")
+        print(X_WE_avg)
+        print(f"\nTranslation: {X_WE_avg[:3, 3]}")
+        print(f"Rotation (euler XYZ): {R.from_matrix(X_WE_avg[:3, :3]).as_euler('xyz', degrees=True)} degrees")
+        print(f"\nSaved to: {result_path}")
+
+    except KeyboardInterrupt:
+        print("\nInterrupted by user")
+    except Exception as e:
+        print(f"\nERROR: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        cv2.destroyAllWindows()
+        client.close()
+        wrist_camera.close()
         external_camera.close()
-    print("\nCameras and robot closed.")
+        print("\nCameras and robot closed.")
+
+
+if __name__ == "__main__":
+    main()

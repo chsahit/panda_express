@@ -496,8 +496,8 @@ def calibrate_wrist_camera(camera_type='zed', serial_number=16779706, server_ip=
         raise ValueError(f"Unknown camera type: {camera_type}. Choose 'zed' or 'realsense'.")
 
     intrinsics, distortion = cam.get_intrinsics()
-    # client = BambooFrankaClient(server_ip=server_ip, enable_gripper=False)
-    client = BambooFrankaClient(server_ip=server_ip)
+    client = BambooFrankaClient(server_ip=server_ip, enable_gripper=False)
+    # client = BambooFrankaClient(server_ip=server_ip)
     calibrator = HandCameraCalibrator(intrinsics, distortion)
 
     # Setup motion planner. Hard-code the time_dilation_factor as the movements are small

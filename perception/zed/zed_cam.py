@@ -7,12 +7,14 @@ class ZedCamera:
         self.serial_number = serial_number
         standard_params = dict(
             depth_minimum_distance=0.1,
-            camera_resolution=sl.RESOLUTION.HD720,
+            camera_resolution=sl.RESOLUTION.HD1080,  # Changed from HD720 to HD1080 for better clarity
             depth_stabilization=False,
-            camera_fps=60,
+            camera_fps=30,  # Reduced from 60 since HD1080 doesn't support 60fps
             camera_image_flip=sl.FLIP_MODE.OFF,
         )
         init_params = sl.InitParameters(**standard_params)
+        import os
+        init_params.optional_settings_path = os.path.expanduser('~/.stereolabs/settings/')
         if serial_number is None:
             print("opening camera")
             self.zed = sl.Camera()
@@ -35,12 +37,12 @@ class ZedCamera:
         self.get_depth_frame()
 
     def get_bgra_frame(self) -> np.ndarray:
-        if self.zed.grab(self._runtime_params) <= sl.ERROR_CODE.SUCCESS:
+        if self.zed.grab(self._runtime_params) == sl.ERROR_CODE.SUCCESS:
             self.zed.retrieve_image(self._image_buffer, sl.VIEW.LEFT)
         return self._image_buffer.get_data()
 
     def get_depth_frame(self) -> np.ndarray:
-        if self.zed.grab(self._runtime_params) <= sl.ERROR_CODE.SUCCESS:
+        if self.zed.grab(self._runtime_params) == sl.ERROR_CODE.SUCCESS:
             self.zed.retrieve_measure(self._depth_buffer, sl.MEASURE.DEPTH)
         depth_mm = self._depth_buffer.get_data()
         return depth_mm / 1000.0
