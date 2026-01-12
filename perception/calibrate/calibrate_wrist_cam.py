@@ -500,6 +500,7 @@ def calibrate_wrist_camera(camera_type='zed', serial_number=16779706, server_ip=
 
     # Set up the camera, robot, and calibrator
     intrinsics, distortion = cam.get_intrinsics()
+    # client = BambooFrankaClient(server_ip=server_ip, enable_gripper=False)
     client = BambooFrankaClient(server_ip=server_ip)
     calibrator = HandCameraCalibrator(intrinsics, distortion)
 

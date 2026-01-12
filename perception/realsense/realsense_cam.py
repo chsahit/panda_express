@@ -26,7 +26,7 @@ class RealSenseCamera:
         self.serial_number = serial_number
         self.width = 1280
         self.height = 720
-        self.fps = 30
+        self.fps = 6  # D435 max fps at 1280x720 for depth is 6fps
 
         # Initialize RealSense pipeline
         self.pipeline = rs.pipeline()
@@ -36,7 +36,7 @@ class RealSenseCamera:
             config.enable_device(str(serial_number))
             print(f"Targeting RealSense camera: {serial_number}")
 
-        # Configure streams at 1280x720 @ 30fps
+        # Configure streams at 1280x720 @ 6fps (max supported by D435 at this resolution)
         config.enable_stream(rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps)
         config.enable_stream(rs.stream.depth, self.width, self.height, rs.format.z16, self.fps)
 
