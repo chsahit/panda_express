@@ -96,7 +96,7 @@ def get_closest_m2t2_grasp(gemini_pt: np.ndarray, pcd: np.ndarray, pcd_colors: n
     return best_grasp
 
 
-def _m2t2_to_panda(m2t2_grasp: np.ndarray) -> np.ndarray:
+def _m2t2_to_panda_guess1(m2t2_grasp: np.ndarray) -> np.ndarray:
     """4x4 transform to take M2T2 grasp poses to the convention expected by the goto skill."""
     base_to_tcp = np.eye(4)
     base_to_tcp[2, 3] = 0.06
@@ -108,13 +108,38 @@ def _m2t2_to_panda(m2t2_grasp: np.ndarray) -> np.ndarray:
     return m2t2_grasp @ m2t2_to_panda_frame
 
 
-def m2t2_to_panda(X_grasp: np.ndarray) -> np.ndarray:
+def _m2t2_to_panda_guess2(X_grasp: np.ndarray) -> np.ndarray:
     correction = np.array([[1, 0, 0, 0], [0, 0, 1, 0], [0, -1, 0, 0], [0, 0, 0, 1]])
     correction2 = np.array([[0, -1, 0, 0], [1, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
     finger_adjustment = np.array(
         [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0.1034], [0, 0, 0, 1]]
     )
     return X_grasp @ correction @ finger_adjustment @ correction2
+
+
+def m2t2_to_panda(m2t2_grasp: np.ndarray) -> np.ndarray:
+    """Convert M2T2 grasp convention to Panda link8 convention.
+
+    M2T2 convention:
+        X-axis: contact_dir (gripper opening direction)
+        Y-axis: cross(approach, contact)
+        Z-axis: approach_dir (gripper approach)
+
+    Panda link8 convention (Robotiq 2F-85):
+        X-axis: perpendicular to opening and approach
+        Y-axis: gripper opening direction
+        Z-axis: gripper approach direction
+
+    Transformation: Rotate -90° around Z to swap X and Y axes.
+    """
+    # Rotation matrix for -90° around Z-axis (swaps X→Y, Y→-X)
+    transform = np.array([
+        [ 0, -1,  0,  0],
+        [ 1,  0,  0,  0],
+        [ 0,  0,  1,  -0.1034],
+        [ 0,  0,  0,  1]
+    ])
+    return m2t2_grasp @ transform
 
 
 def _get_pixel_from_gemini(vlm_query_str: str, pil_image: Image.Image) -> Tuple[int, int]:
@@ -184,12 +209,104 @@ def _get_pixel_from_gemini(vlm_query_str: str, pil_image: Image.Image) -> Tuple[
     return (x, y)
 
 
+def visualize_m2t2_grasps(
+    gemini_pt: np.ndarray,
+    pcd: np.ndarray,
+    pcd_colors: np.ndarray,
+    server_url: str,
+    num_top_grasps: int = 5
+) -> None:
+    """Visualize M2T2 grasps and their conversion to Panda convention.
+
+    Args:
+        gemini_pt: (3,) array with (x, y, z) point from Gemini VLM
+        pcd: (N, 3) point cloud array
+        pcd_colors: (N, 3) RGB colors in [0, 1] range
+        server_url: URL of the M2T2 server
+        num_top_grasps: Number of top grasps to visualize
+    """
+    from panda_express.skills.visualize_grasps import (
+        visualize_grasp_comparison,
+        visualize_multiple_grasps,
+        print_grasp_info
+    )
+
+    # Get all grasps from M2T2
+    payload = {
+        "pointcloud": {
+            "points": pcd.tolist(),
+            "rgb": pcd_colors.tolist()
+        },
+        "num_points": 16384,
+        "num_runs": 5,
+        "mask_thresh": 0.2,
+        "apply_bounds": True
+    }
+
+    response = requests.post(f"{server_url}/predict", json=payload, timeout=60)
+    response.raise_for_status()
+    result = response.json()
+
+    grasps_list = result.get("grasps", [])
+    confidences_list = result.get("grasp_confidence", [])
+
+    # Flatten grasps
+    all_grasps = []
+    all_confidences = []
+    for obj_grasps, obj_confs in zip(grasps_list, confidences_list):
+        all_grasps.append(np.array(obj_grasps, dtype=np.float32))
+        all_confidences.append(np.array(obj_confs, dtype=np.float32))
+
+    all_grasps = np.concatenate(all_grasps, axis=0)
+    all_confidences = np.concatenate(all_confidences, axis=0)
+
+    # Get top grasps near the gemini point
+    grasp_positions = all_grasps[:, :3, 3]
+    distances = np.linalg.norm(grasp_positions - gemini_pt[np.newaxis, :], axis=1)
+
+    # Get closest grasps
+    num_closest = min(num_top_grasps * 2, len(distances))
+    closest_indices = np.argpartition(distances, num_closest - 1)[:num_closest]
+
+    # Sort by confidence
+    sorted_by_conf = closest_indices[np.argsort(-all_confidences[closest_indices])]
+    top_indices = sorted_by_conf[:num_top_grasps]
+
+    m2t2_top_grasps = [all_grasps[i] for i in top_indices]
+    panda_top_grasps = [m2t2_to_panda(g) for g in m2t2_top_grasps]
+
+    # Visualize the best grasp in detail
+    best_m2t2 = m2t2_top_grasps[0]
+    best_panda = panda_top_grasps[0]
+
+    print(f"\nVisualization 1: Best grasp comparison (M2T2 vs Panda)")
+    print(f"Confidence: {all_confidences[top_indices[0]]:.3f}")
+    print(f"Distance from Gemini point: {distances[top_indices[0]]:.3f}m")
+
+    print_grasp_info(best_m2t2, best_panda)
+    visualize_grasp_comparison(best_m2t2, best_panda, pcd, pcd_colors,
+                               window_name="Best Grasp: M2T2 vs Panda")
+
+    # Visualize multiple top grasps
+    print(f"\nVisualization 2: Top {num_top_grasps} grasps in Panda convention")
+    visualize_multiple_grasps(m2t2_top_grasps, panda_top_grasps, pcd, pcd_colors,
+                             max_grasps=num_top_grasps,
+                             window_name="Top Grasps (Panda Convention)")
+
+
 def grasp_with_vlm(
     robot: BambooFrankaClient,
     text_prompt: str | None,
-    use_m2t2: bool = True
+    use_m2t2: bool = True,
+    visualize: bool = False
 ) -> None:
     """High-level grasp skill that uses a VLM to choose a pixel from a prompt.
+
+    Args:
+        robot: Robot client
+        text_prompt: Text description of object to grasp
+        use_m2t2: Whether to use M2T2 for grasp selection
+        visualize: Whether to visualize grasps before executing
     """
     print(f"Calling grasping with VLM for text prompt: {text_prompt}")
 
@@ -223,6 +340,15 @@ def grasp_with_vlm(
 
     pixel_xyz = pixel_to_world_xyz(pixel[0], pixel[1], depth, K, extrinsics)
     pcd, pcd_colors = depth_to_colored_pcd(rgb, depth, K, extrinsics)
+
+    # Visualize grasps if requested
+    if visualize and use_m2t2:
+        print("\n" + "="*70)
+        print("VISUALIZING GRASPS (close windows to continue)")
+        print("="*70)
+        visualize_m2t2_grasps(pixel_xyz, pcd, pcd_colors, "http://0.0.0.0:8123", num_top_grasps=5)
+        input("\nPress Enter to continue with grasp execution...")
+
     # go to pre-grasp pose
     print("go to pre-grasp")
     X_WPregrasp = np.eye(4)
@@ -247,4 +373,4 @@ def grasp_with_vlm(
 
 if __name__ == "__main__":
     with BambooFrankaClient(server_ip="128.30.224.88") as rob:
-        grasp_with_vlm(rob, "red mug")
+        grasp_with_vlm(rob, "blue mug")
