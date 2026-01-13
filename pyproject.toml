@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bamboo-franka-controller"
+name = "panda_express"
 version = "0.1.0"
-description = "Bamboo Franka Robot Control with Joint Impedance Control"
+description = "A set of scripted skills based on the bamboo control library"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -29,12 +29,13 @@ classifiers = [
 requires-python = ">=3.8"
 dependencies = [
     "msgpack",
-    "numpy==1.26.4",
+    "numpy<2.0",
     "pyzmq>=22.0.0",
     "roboticstoolbox-python",
     "opencv-contrib-python==4.11.0.86",
     "google-generativeai",
     "ImageHash",
+    "bamboo-franka-controller @ git+https://github.com/chsahit/bamboo.git@swe_mode"
 ]
 
 [project.optional-dependencies]
@@ -51,7 +52,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/chsahit/bamboo"
+Homepage = "https://github.com/chsahit/bamboo_experimental"
 
 [tool.setuptools]
 package-dir = {"" = "."}
