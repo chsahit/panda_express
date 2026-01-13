@@ -1,13 +1,16 @@
 # TODOs
 
-- [ ] rename to see_panda_plan
-- [ ] delete bamboo stuff
-- [ ] add bamboo to pyproject toml
-- [ ] document workaround for zed install
+- [ ] add a config file for server ip and camera serial numbers and extrinsics
+- [ ] add a one-line utility for grabbing rgb + d + intrinsics + extrinsics
+- [ ] acknowledgements section (see-spot-plan @ feijoa-spot-skills devs and tiptop devs / Will, Lucy, Adi, Nishanth)
+- [ ] document running bamboo on control machine as a prereq
 - [ ] wrap cameras in a context manager
 
 
 - [x] add logic for pulling from camera
 - [x] add logic for camera calibration
 - [x] document install process
-
+- [x] delete bamboo stuff
+- [x] add bamboo to pyproject toml
+- [x] document workaround for zed install
+- [x] rename to panda-express
