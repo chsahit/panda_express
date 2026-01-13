@@ -5,12 +5,109 @@ import json
 from datetime import datetime
 import numpy as np
 import os
+import requests
+from scipy.spatial.transform import Rotation as R
 
 from bamboo.client import BambooFrankaClient
-from perception.zed.zed_cam import ZedCamera
-from perception.utils.transform import pixel_to_world_xyz
-from perception.utils.pretrained_model_interface import GoogleGeminiVLM
-from skills.go_to_conf import goto_hand_position, TOP_DOWN_GRASP_ROT
+from panda_express.perception.zed.zed_cam import ZedCamera
+from panda_express.perception.utils.transform import pixel_to_world_xyz, depth_to_colored_pcd
+from panda_express.perception.utils.pretrained_model_interface import GoogleGeminiVLM
+from panda_express.skills.go_to_conf import goto_hand_position, TOP_DOWN_GRASP_ROT
+
+
+def get_closest_m2t2_grasp(gemini_pt: np.ndarray, pcd: np.ndarray, pcd_colors: np.ndarray, server_url) -> np.ndarray:
+    """Get the closest high-confidence grasp from M2T2 server.
+
+    Args:
+        gemini_pt: (3,) array with (x, y, z) point from Gemini VLM
+        pcd: (N, 3) point cloud array
+        pcd_colors: (N, 3) RGB colors in [0, 1] range
+        server_url: URL of the M2T2 server
+
+    Returns:
+        (4, 4) numpy array representing the best grasp pose
+    """
+    payload = {
+        "pointcloud": {
+            "points": pcd.tolist(),
+            "rgb": pcd_colors.tolist()
+        },
+        "num_points": 16384,
+        "num_runs": 5,
+        "mask_thresh": 0.2,
+        "apply_bounds": True
+    }
+    try:
+        response = requests.post(
+            f"{server_url}/predict",
+            json=payload,
+            timeout=60,
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"Error communicating with server: {e}")
+        raise
+
+    result = response.json()
+    grasps_list = result.get("grasps", [])
+    confidences_list = result.get("grasp_confidence", [])
+
+    # Flatten grasps and confidences from all objects into single lists
+    all_grasps = []
+    all_confidences = []
+
+    for obj_grasps, obj_confs in zip(grasps_list, confidences_list):
+        # Convert to numpy arrays
+        obj_grasps_np = np.array(obj_grasps, dtype=np.float32)
+        obj_confs_np = np.array(obj_confs, dtype=np.float32)
+        all_grasps.append(obj_grasps_np)
+        all_confidences.append(obj_confs_np)
+
+    # Concatenate all objects' grasps
+    if len(all_grasps) == 0:
+        raise ValueError("No grasps returned from M2T2 server")
+
+    all_grasps = np.concatenate(all_grasps, axis=0)  # (total_N, 4, 4)
+    all_confidences = np.concatenate(all_confidences, axis=0)  # (total_N,)
+
+    # Extract positions (translation component) from each grasp
+    # Grasp poses are 4x4 transformation matrices, position is in [:3, 3]
+    grasp_positions = all_grasps[:, :3, 3]  # (total_N, 3)
+
+    # Compute distances from gemini_pt to each grasp position
+    distances = np.linalg.norm(grasp_positions - gemini_pt[np.newaxis, :], axis=1)  # (total_N,)
+
+    # Find indices of 5 closest grasps
+    num_closest = min(5, len(distances))
+    closest_indices = np.argpartition(distances, num_closest - 1)[:num_closest]
+
+    # Among the 5 closest, find the one with highest confidence
+    closest_confidences = all_confidences[closest_indices]
+    print(f"{closest_confidences=}")
+    best_idx_among_closest = np.argmax(closest_confidences)
+    best_grasp_idx = closest_indices[best_idx_among_closest]
+
+    best_grasp = all_grasps[best_grasp_idx]
+    best_conf = all_confidences[best_grasp_idx]
+    best_dist = distances[best_grasp_idx]
+
+    print(f"Selected grasp with confidence {best_conf:.3f} at distance {best_dist:.3f}m from Gemini point")
+
+    return best_grasp
+
+
+
+def m2t2_to_panda(m2t2_grasp: np.ndarray) -> np.ndarray:
+    """4x4 transform to take M2T2 grasp poses to the convention expected by the goto skill."""
+    base_to_tcp = np.eye(4)
+    base_to_tcp[2, 3] = 0.1034
+
+    # To panda frame with z-up
+    to_panda_frame = np.eye(4)
+    to_panda_frame[:3, :3] = R.from_euler("xyz", np.array([np.pi, 0, -np.pi / 2])).as_matrix() 
+    m2t2_to_panda_frame = base_to_tcp @ to_panda_frame
+    return m2t2_grasp @ m2t2_to_panda_frame
+
 
 
 def _get_pixel_from_gemini(vlm_query_str: str, pil_image: Image.Image) -> Tuple[int, int]:
@@ -83,6 +180,7 @@ def _get_pixel_from_gemini(vlm_query_str: str, pil_image: Image.Image) -> Tuple[
 def grasp_with_vlm(
     robot: BambooFrankaClient,
     text_prompt: str | None,
+    use_m2t2: bool = True
 ) -> None:
     """High-level grasp skill that uses a VLM to choose a pixel from a prompt.
     """
@@ -94,7 +192,7 @@ def grasp_with_vlm(
     depth = cam.get_depth_frame()
     K = cam.get_intrinsics()[0]
     cam.close()
-    extrinsics = np.load("perception/zed/X_WE.npy")
+    extrinsics = np.load("panda_express/perception/zed/X_WE.npy")
 
     # Call Gemini to point to the object described by the prompt.
     vlm_query_template = f"""
@@ -113,17 +211,31 @@ def grasp_with_vlm(
     os.makedirs(save_folderpath, exist_ok=True)
     Image.fromarray(rgb_annotated).save(os.path.join(save_folderpath, f"annotated_rgb_{timestamp}.png"))
 
-    if pixel is not None:
-        # Grasp at the pixel with a top-down grasp.
-        pixel_xyz = pixel_to_world_xyz(pixel[0], pixel[1], depth, K, extrinsics)
+    if pixel is None:
+        raise RuntimeError("Grasp failed: VLM did not return a valid pixel.")
+
+    pixel_xyz = pixel_to_world_xyz(pixel[0], pixel[1], depth, K, extrinsics)
+    pcd, pcd_colors = depth_to_colored_pcd(rgb, depth, K, extrinsics)
+    # go to pre-grasp pose
+    print("go to pre-grasp")
+    X_WPregrasp = np.eye(4)
+    X_WPregrasp[:3, :3] = TOP_DOWN_GRASP_ROT
+    X_WPregrasp[:3, 3] = pixel_xyz + np.array([0.0, 0.0, 0.25])
+    goto_hand_position(robot, X_WPregrasp, 5.0)
+
+    # go to grasp pose
+
+    if use_m2t2:
+        print("querying M2T2 for grasp...")
+        m2t2_best_grasp = get_closest_m2t2_grasp(pixel_xyz, pcd, pcd_colors, "http://0.0.0.0:8123")
+        X_WGoal = m2t2_to_panda(m2t2_best_grasp)
+    else:
         X_WGoal = np.eye(4)
         X_WGoal[:3, :3] = TOP_DOWN_GRASP_ROT
         X_WGoal[:3, 3] = pixel_xyz + np.array([0.0, 0.0, 0.15])
-        goto_hand_position(robot, X_WGoal, 5.0)
-        rob.close_gripper()
-        return
+    goto_hand_position(robot, X_WGoal, 3.0)
+    robot.close_gripper()
 
-    raise RuntimeError("Grasp failed: VLM did not return a valid pixel.")
 
 if __name__ == "__main__":
     with BambooFrankaClient(server_ip="128.30.224.88") as rob:

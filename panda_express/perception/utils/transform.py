@@ -1,4 +1,5 @@
 import numpy as np
+from typing import Tuple
 
 def pixel_to_world_xyz(
     u: int,
@@ -34,3 +35,40 @@ def pixel_to_world_xyz(
     p_body = (T_world_zed @ p_cam_h)[:3]
     return p_body
 
+
+def depth_to_colored_pcd(rgb: np.ndarray, depth: np.ndarray, K: np.ndarray, T_world_cam: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """takes a depth image from a camera with intrinsics K and extrinsics T_world_cam and returns an Nx3 pointcloud and Nx3 colors"""
+    H, W = depth.shape
+
+    # Extract intrinsics
+    fx, fy = K[0, 0], K[1, 1]
+    cx, cy = K[0, 2], K[1, 2]
+
+    # Create pixel coordinate grids
+    u, v = np.meshgrid(np.arange(W), np.arange(H))
+
+    # Flatten arrays
+    u_flat = u.flatten()
+    v_flat = v.flatten()
+    z_flat = depth.flatten()
+    rgb_flat = rgb.reshape(-1, 3)
+
+    # Filter valid depth values
+    valid_mask = np.isfinite(z_flat) & (z_flat > 0)
+    u_valid = u_flat[valid_mask]
+    v_valid = v_flat[valid_mask]
+    z_valid = z_flat[valid_mask]
+    colors_valid = rgb_flat[valid_mask]
+
+    # Back-project to camera frame
+    x_cam = (u_valid - cx) / fx * z_valid
+    y_cam = (v_valid - cy) / fy * z_valid
+
+    # Create homogeneous coordinates (Nx4)
+    points_cam_h = np.stack([x_cam, y_cam, z_valid, np.ones_like(z_valid)], axis=1)
+
+    # Transform to world frame
+    points_world_h = (T_world_cam @ points_cam_h.T).T
+
+    # Return xyz and rgb colors
+    return points_world_h[:, :3], colors_valid

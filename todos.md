@@ -2,6 +2,8 @@
 
 - [ ] add a config file for server ip and camera serial numbers and extrinsics
 - [ ] add a one-line utility for grabbing rgb + d + intrinsics + extrinsics
+- [ ] acknowledgements section (see-spot-plan @ feijoa-spot-skills devs and tiptop devs / Will, Lucy, Adi, Nishanth)
+- [ ] document running bamboo on control machine as a prereq
 - [ ] wrap cameras in a context manager
 
 
