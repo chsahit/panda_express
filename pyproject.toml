@@ -52,7 +52,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/chsahit/bamboo_experimental"
+Homepage = "https://github.com/chsahit/panda_express"
 
 [tool.setuptools]
 package-dir = {"" = "."}

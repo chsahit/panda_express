@@ -96,11 +96,10 @@ def get_closest_m2t2_grasp(gemini_pt: np.ndarray, pcd: np.ndarray, pcd_colors: n
     return best_grasp
 
 
-
-def m2t2_to_panda(m2t2_grasp: np.ndarray) -> np.ndarray:
+def _m2t2_to_panda(m2t2_grasp: np.ndarray) -> np.ndarray:
     """4x4 transform to take M2T2 grasp poses to the convention expected by the goto skill."""
     base_to_tcp = np.eye(4)
-    base_to_tcp[2, 3] = 0.1034
+    base_to_tcp[2, 3] = 0.06
 
     # To panda frame with z-up
     to_panda_frame = np.eye(4)
@@ -108,6 +107,14 @@ def m2t2_to_panda(m2t2_grasp: np.ndarray) -> np.ndarray:
     m2t2_to_panda_frame = base_to_tcp @ to_panda_frame
     return m2t2_grasp @ m2t2_to_panda_frame
 
+
+def m2t2_to_panda(X_grasp: np.ndarray) -> np.ndarray:
+    correction = np.array([[1, 0, 0, 0], [0, 0, 1, 0], [0, -1, 0, 0], [0, 0, 0, 1]])
+    correction2 = np.array([[0, -1, 0, 0], [1, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+    finger_adjustment = np.array(
+        [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0.1034], [0, 0, 0, 1]]
+    )
+    return X_grasp @ correction @ finger_adjustment @ correction2
 
 
 def _get_pixel_from_gemini(vlm_query_str: str, pil_image: Image.Image) -> Tuple[int, int]:
@@ -233,6 +240,7 @@ def grasp_with_vlm(
         X_WGoal = np.eye(4)
         X_WGoal[:3, :3] = TOP_DOWN_GRASP_ROT
         X_WGoal[:3, 3] = pixel_xyz + np.array([0.0, 0.0, 0.15])
+    print(f"{X_WGoal=}")
     goto_hand_position(robot, X_WGoal, 3.0)
     robot.close_gripper()
 
