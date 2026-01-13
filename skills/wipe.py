@@ -8,9 +8,9 @@ import cv2
 from bamboo.client import BambooFrankaClient
 from perception.zed.zed_cam import ZedCamera
 from perception.utils import pixel_to_world_xyz
+from perception.utils.pretrained_model_interface import GoogleGeminiVLM
 from scipy.spatial.transform import Rotation as R
 from skills.go_to_conf import goto_hand_position, TOP_DOWN_GRASP_ROT
-from skills.utils.pretrained_model_interface import GoogleGeminiVLM
 
 
 DEFAULT_WIPE_ONLINE_Z_OFFSET = 0.175

@@ -1,6 +1,8 @@
 # TODOs
 
-- [ ] rename to see_panda_plan
+- [ ] add a config file for server ip and camera serial numbers and extrinsics
+- [ ] add a one-line utility for grabbing rgb + d + intrinsics + extrinsics
+- [ ] rename to panda-express
 - [ ] wrap cameras in a context manager
 
 
