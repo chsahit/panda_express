@@ -292,7 +292,8 @@ def grasp_with_vlm(
     cam = ZedCamera(serial_number=35317039)
     bgra = cam.get_bgra_frame()
     rgb = cv2.cvtColor(bgra, cv2.COLOR_BGRA2RGB)
-    depth = cam.get_depth_frame()
+    # depth = cam.get_depth_frame()
+    depth = cam.get_foundation_depth_frame()
     K = cam.get_intrinsics()[0]
     cam.close()
     extrinsics = np.load("panda_express/perception/zed/X_WE.npy")

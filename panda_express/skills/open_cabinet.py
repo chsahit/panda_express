@@ -12,11 +12,11 @@ from panda_express.skills.go_to_conf import goto_hand_position, TOP_DOWN_GRASP_R
 from panda_express.skills.grasp_vlm import _get_pixel_from_gemini
 
 prompt_get_handle_pixel = """
-    Point to the CENTER (MIDDLE) of the TOP GRAY handle of the drawer.
+    Point to the CENTER (MIDDLE) of the TOP ORANGE handle of the drawer.
     The answer should follow the json format: [{"point": , "label": }, ...]. The points are in [y, x] format normalized to 0-1000.
     """
 prompt_get_drawer_surface_pixel = """
-    Point to 15 points on the front face of the TOP drawer, but avoid the drawer handles (including the GRAY handle) or the edges of the front face.
+    Point to 15 points on the front face of the TOP drawer, but avoid the drawer handles (including the ORANGE handle) or the edges of the front face.
     Make sure the points are on the front face, not the side face.
     The answer should follow the json format: [{"point": , "label": }, ...]. The points are in [y, x] format normalized to 0-1000.
     """
@@ -25,7 +25,7 @@ prompt_get_objects_inside_drawer = """
     The answer should follow the format: ["object1", "object2", ...].
     """
 prompt_handle = """
-    Does the drawer contained in this image have a GRAY handle? Answer with only "Yes" or "No".
+    Does the drawer contained in this image have a ORANGE handle? Answer with only "Yes" or "No".
     """
 
 CABINET_GRASPING_ROT = np.array([[0, 0, 1.0], [1, 0, 0], [0, 1.0, 0]])
@@ -80,7 +80,7 @@ def open_drawer(robot: BambooFrankaClient):
     cam = ZedCamera(serial_number=35317039)
     bgra = cam.get_bgra_frame()
     rgb = cv2.cvtColor(bgra, cv2.COLOR_BGRA2RGB)
-    depth = cam.get_depth_frame()
+    depth = cam.get_foundation_depth_frame()
     K = cam.get_intrinsics()[0]
     cam.close()
     extrinsics = np.load("panda_express/perception/zed/X_WE.npy")
@@ -105,13 +105,13 @@ def open_drawer(robot: BambooFrankaClient):
     draw_colored_pixels(image_pil, [handle_pixel], "image_logs/annotated_hand_camera_output.jpg", "red")
     pixel_xyz = pixel_to_world_xyz(handle_pixel[0], handle_pixel[1], depth, K, extrinsics)
 
-    pregrasp_xyz = pixel_xyz - np.array([0.3, 0.0, 0.0])
+    pregrasp_xyz = pixel_xyz - np.array([0.25, 0.0, 0.0])
     X_WPregrasp = np.eye(4)
     X_WPregrasp[:3, :3] = CABINET_GRASPING_ROT
     X_WPregrasp[:3, 3] = pregrasp_xyz
 
 
-    grasp_xyz = pixel_xyz - np.array([0.15, 0.0, 0.0])
+    grasp_xyz = pixel_xyz - np.array([0.125, 0.0, 0.0])
     X_WGrasp = np.eye(4)
     X_WGrasp[:3, :3] = CABINET_GRASPING_ROT
     X_WGrasp[:3, 3] = grasp_xyz
