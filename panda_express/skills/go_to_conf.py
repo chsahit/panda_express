@@ -6,10 +6,86 @@ from spatialmath import SE3
 
 from bamboo.client import BambooFrankaClient
 
-# Load the robot model from URDF
-URDF_PATH = Path(__file__).parent / "fr3_robotiq_2f_85.urdf"
-robot_model = rtb.Robot.URDF(str(URDF_PATH))
+# URDF directory and mapping for different gripper types
+URDF_DIR = Path(__file__).parent / "urdfs"
+URDF_MAP = {
+    "robotiq": URDF_DIR / "fr3_robotiq_2f_85.urdf",
+    "franka": URDF_DIR / "panda_arm_hand.urdf",
+}
+
+# Cache for loaded models (lazy loading)
+_MODEL_CACHE = {}
+
 TOP_DOWN_GRASP_ROT = np.array([[1.0, 0.0, 0.0], [0.0, -1, 0], [-0.0, 0, -1.0]])
+
+
+def load_robot_model(gripper_type: str = "robotiq"):
+    """Load and cache robot model for specified gripper type.
+
+    Args:
+        gripper_type: Gripper type - "robotiq" or "franka" (default: "robotiq")
+
+    Returns:
+        Robot model from roboticstoolbox
+
+    Raises:
+        ValueError: If gripper_type is not recognized
+        FileNotFoundError: If URDF file doesn't exist
+    """
+    if gripper_type not in URDF_MAP:
+        raise ValueError(f"Unknown gripper_type '{gripper_type}'. Options: {list(URDF_MAP.keys())}")
+
+    urdf_path = URDF_MAP[gripper_type]
+
+    if not urdf_path.exists():
+        raise FileNotFoundError(f"URDF file not found: {urdf_path}")
+
+    # Return cached model if already loaded
+    if urdf_path not in _MODEL_CACHE:
+        print(f"Loading robot model from: {urdf_path}")
+        _MODEL_CACHE[urdf_path] = rtb.Robot.URDF(str(urdf_path))
+
+    return _MODEL_CACHE[urdf_path]
+
+
+def list_available_grippers():
+    """List all available gripper types."""
+    return list(URDF_MAP.keys())
+
+
+def contactgraspnet_to_panda(cg_grasp: np.ndarray) -> np.ndarray:
+    """Convert ContactGraspNet grasp convention to Panda convention.
+
+    Applies -90° rotation around Z axis to align frame conventions,
+    then +45° rotation to compensate for panda_link8 to panda_hand offset.
+
+    Args:
+        cg_grasp: 4x4 grasp pose matrix in ContactGraspNet convention
+
+    Returns:
+        4x4 grasp pose matrix in Panda convention
+    """
+    # First: -90° rotation (ContactGraspNet to standard Panda convention)
+    transform_90 = np.array([
+        [ 0, -1,  0,  0],
+        [ 1,  0,  0,  0],
+        [ 0,  0,  1,  0],
+        [ 0,  0,  0,  1]
+    ])
+
+    # Second: +45° rotation to compensate for URDF panda_link8->panda_hand offset
+    angle = np.pi / 4  # +45 degrees
+    cos_a = np.cos(angle)
+    sin_a = np.sin(angle)
+    transform_45 = np.array([
+        [cos_a, -sin_a,  0,  0],
+        [sin_a,  cos_a,  0,  0],
+        [    0,      0,  1,  0],
+        [    0,      0,  0,  1]
+    ])
+
+    # Apply both transforms
+    return cg_grasp @ transform_90 @ transform_45
 
 
 def goto_joint_angles(robot: BambooFrankaClient, q: np.ndarray, time: float) -> int:
@@ -55,7 +131,21 @@ def goto_joint_angles(robot: BambooFrankaClient, q: np.ndarray, time: float) -> 
     return 0
 
 
-def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float) -> int:
+def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float,
+                      gripper_type: str = "robotiq") -> int:
+    """Move hand to specified pose using inverse kinematics.
+
+    Args:
+        rob: Robot client
+        X_WG: 4x4 target pose matrix
+        time: Movement duration in seconds
+        gripper_type: Gripper type - "robotiq" or "franka" (default: "robotiq")
+
+    Returns:
+        0 on success, 1 on failure
+    """
+    # Load appropriate robot model
+    robot_model = load_robot_model(gripper_type)
 
     s_current = rob.get_joint_states()
     q_current = np.array(s_current["qpos"])
@@ -98,5 +188,6 @@ def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float) -
 
 if __name__ == "__main__":
     q_neutral = np.array([-0.0, -0.785398, 0.0, -2.356194, 0.0, 1.570796, -0.14])
-    with BambooFrankaClient(server_ip="128.30.224.88") as rob:
+    # with BambooFrankaClient(server_ip="128.30.224.88") as rob:
+    with BambooFrankaClient(server_ip="192.168.1.3") as rob:
         goto_joint_angles(rob, q_neutral, 5)
