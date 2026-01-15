@@ -8,6 +8,7 @@ Usage:
 
 import numpy as np
 import argparse
+import time
 from pathlib import Path
 from bamboo.client import BambooFrankaClient
 from go_to_conf import goto_hand_position, list_available_grippers, contactgraspnet_to_panda
@@ -71,7 +72,7 @@ def main():
     # 6. Connect to robot
     print(f"\nConnecting to robot at {args.server_ip}...")
     print(f"Using gripper type: {args.gripper_type}")
-    with BambooFrankaClient(server_ip=args.server_ip) as robot:
+    with BambooFrankaClient(server_ip=args.server_ip, gripper_type="franka") as robot:
         # 7. Execute motion to pre-grasp pose
         print(f"Moving to pre-grasp pose over {args.move_time} seconds...")
         result = goto_hand_position(robot, T_world_pregrasp, args.move_time,
@@ -90,6 +91,76 @@ def main():
             print(f"  z: {final_position[2]*100:.2f} cm")
             print(f"\nFinal end-effector orientation (rotation matrix):")
             print(final_ee_pose[:3, :3])
+
+            # 8. Calculate grasp pose (8cm below pre-grasp)
+            T_world_grasp_final = T_world_pregrasp.copy()
+            T_world_grasp_final[2, 3] -= 0.08  # Move down 8cm
+            print(f"\nTarget grasp pose (8.0cm below pre-grasp):")
+            print(T_world_grasp_final)
+
+            # 9. Move to grasp pose
+            print(f"\nMoving to grasp pose over 5.0 seconds...")
+            result = goto_hand_position(robot, T_world_grasp_final, 5.0,
+                                       gripper_type=args.gripper_type)
+
+            if result != 0:
+                print("✗ Failed to reach grasp pose")
+                return 1
+
+            print("✓ Successfully reached grasp pose!")
+
+            # Get and print final grasp position
+            final_grasp_state = robot.get_joint_states()
+            final_grasp_ee_pose = np.array(final_grasp_state['ee_pose'])
+            final_grasp_position = final_grasp_ee_pose[:3, 3]
+            print(f"\nFinal grasp position:")
+            print(f"  x: {final_grasp_position[0]*100:.2f} cm")
+            print(f"  y: {final_grasp_position[1]*100:.2f} cm")
+            print(f"  z: {final_grasp_position[2]*100:.2f} cm")
+            print(f"\nFinal grasp orientation (rotation matrix):")
+            print(final_grasp_ee_pose[:3, :3])
+
+            # 10. Stabilization delay
+            print("\nStabilizing robot position...")
+            time.sleep(0.5)
+
+            # 11. Close gripper
+            print("Closing gripper...")
+            gripper_result = robot.close_gripper()
+            print(f"Gripper close result: {gripper_result}")
+
+            # Get final gripper state
+            final_gripper_state = robot.get_gripper_state()
+            print(f"Final gripper state: {final_gripper_state}")
+
+            print("\n✓ Grasp execution complete!")
+
+            # 12. Move 30cm upward (lift)
+            T_world_lift = T_world_grasp_final.copy()
+            T_world_lift[2, 3] += 0.30  # Move up 30cm
+            print(f"\nTarget lift pose (30.0cm above grasp):")
+            print(T_world_lift)
+
+            print(f"\nMoving upward 30cm over 5.0 seconds...")
+            result = goto_hand_position(robot, T_world_lift, 5.0,
+                                       gripper_type=args.gripper_type)
+
+            if result != 0:
+                print("✗ Failed to reach lift pose")
+                return 1
+
+            print("✓ Successfully reached lift pose!")
+
+            # Get and print final lift position
+            final_lift_state = robot.get_joint_states()
+            final_lift_ee_pose = np.array(final_lift_state['ee_pose'])
+            final_lift_position = final_lift_ee_pose[:3, 3]
+            print(f"\nFinal lift position:")
+            print(f"  x: {final_lift_position[0]*100:.2f} cm")
+            print(f"  y: {final_lift_position[1]*100:.2f} cm")
+            print(f"  z: {final_lift_position[2]*100:.2f} cm")
+
+            print("\n✓ Full grasp and lift sequence complete!")
         else:
             print("✗ Failed to reach pre-grasp pose")
             return 1
