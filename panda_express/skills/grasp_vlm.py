@@ -12,13 +12,14 @@ from bamboo.client import BambooFrankaClient
 from panda_express.perception.zed.zed_cam import ZedCamera
 from panda_express.perception.utils.transform import pixel_to_world_xyz, depth_to_colored_pcd
 from panda_express.perception.utils.pretrained_model_interface import GoogleGeminiVLM
-from panda_express.skills.go_to_conf import goto_hand_position, TOP_DOWN_GRASP_ROT
+from panda_express.skills.go_to_conf import goto_hand_position, TOP_DOWN_GRASP_ROT, rtb_IK
 
 
-def get_closest_m2t2_grasp(gemini_pt: np.ndarray, pcd: np.ndarray, pcd_colors: np.ndarray, server_url) -> np.ndarray:
+def get_closest_m2t2_grasp(q_rob: np.ndarray, gemini_pt: np.ndarray, pcd: np.ndarray, pcd_colors: np.ndarray, server_url) -> np.ndarray:
     """Get the closest high-confidence grasp from M2T2 server.
 
     Args:
+        q_rob: (7,) array with current robot joint angles
         gemini_pt: (3,) array with (x, y, z) point from Gemini VLM
         pcd: (N, 3) point cloud array
         pcd_colors: (N, 3) RGB colors in [0, 1] range
@@ -77,11 +78,36 @@ def get_closest_m2t2_grasp(gemini_pt: np.ndarray, pcd: np.ndarray, pcd_colors: n
     # Compute distances from gemini_pt to each grasp position
     distances = np.linalg.norm(grasp_positions - gemini_pt[np.newaxis, :], axis=1)  # (total_N,)
 
-    # Find indices of 5 closest grasps
-    num_closest = min(5, len(distances))
+    # Find indices of 50 closest grasps w.r.t translational distance
+    num_closest = min(50, len(distances))
     closest_indices = np.argpartition(distances, num_closest - 1)[:num_closest]
 
-    # Among the 5 closest, find the one with highest confidence
+    # Find indices of 3 closest grasps w.r.t joint space distance
+    joint_space_distances = []
+    valid_indices = []
+    for idx in closest_indices:
+        grasp = all_grasps[idx]
+        panda_grasp = m2t2_to_panda(grasp)
+        ik_soln = rtb_IK(panda_grasp, q_rob)
+        if ik_soln is not None:
+            joint_dist = np.linalg.norm(ik_soln[:7] - q_rob[:7])
+            joint_space_distances.append(joint_dist)
+            valid_indices.append(idx)
+
+    if len(valid_indices) == 0:
+        raise ValueError("No valid IK solutions found for any of the candidate grasps")
+
+    joint_space_distances = np.array(joint_space_distances)
+    valid_indices = np.array(valid_indices)
+
+    # Sort by joint space distance and take top 5
+    sorted_order = np.argsort(joint_space_distances)
+    num_to_keep = min(3, len(sorted_order))
+    closest_indices = valid_indices[sorted_order[:num_to_keep]]
+
+    print(f"Filtered to {num_to_keep} grasps with smallest joint space distances: {joint_space_distances[sorted_order[:num_to_keep]]}")
+
+    # Among the 5 closest in joint space, find the one with highest confidence
     closest_confidences = all_confidences[closest_indices]
     print(f"{closest_confidences=}")
     best_idx_among_closest = np.argmax(closest_confidences)
@@ -329,22 +355,23 @@ def grasp_with_vlm(
         visualize_m2t2_grasps(pixel_xyz, pcd, pcd_colors, "http://0.0.0.0:8123", num_top_grasps=5)
         input("\nPress Enter to continue with grasp execution...")
 
-    if use_m2t2:
-        print("querying M2T2 for grasp...")
-        m2t2_best_grasp = get_closest_m2t2_grasp(pixel_xyz, pcd, pcd_colors, "http://0.0.0.0:8123")
-        X_WGoal = m2t2_to_panda(m2t2_best_grasp)
-    else:
-        X_WGoal = np.eye(4)
-        X_WGoal[:3, :3] = TOP_DOWN_GRASP_ROT
-        X_WGoal[:3, 3] = pixel_xyz + np.array([0.0, 0.0, 0.15])
-    print(f"{X_WGoal=}")
-
     # go to pre-grasp pose
     print("go to pre-grasp")
     X_WPregrasp = np.eye(4)
     X_WPregrasp[:3, :3] = TOP_DOWN_GRASP_ROT
     X_WPregrasp[:3, 3] = pixel_xyz + np.array([0.0, 0.0, 0.25])
     goto_hand_position(robot, X_WPregrasp, 5.0)
+
+    if use_m2t2:
+        print("querying M2T2 for grasp...")
+        q_rob = robot.get_joint_positions()
+        m2t2_best_grasp = get_closest_m2t2_grasp(q_rob, pixel_xyz, pcd, pcd_colors, "http://0.0.0.0:8123")
+        X_WGoal = m2t2_to_panda(m2t2_best_grasp)
+    else:
+        X_WGoal = np.eye(4)
+        X_WGoal[:3, :3] = TOP_DOWN_GRASP_ROT
+        X_WGoal[:3, 3] = pixel_xyz + np.array([0.0, 0.0, 0.15])
+    print(f"{X_WGoal=}")
 
     # go to grasp pose
     goto_hand_position(robot, X_WGoal, 3.0)
