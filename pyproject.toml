@@ -35,7 +35,7 @@ dependencies = [
     "opencv-contrib-python==4.11.0.86",
     "google-generativeai",
     "ImageHash",
-    "bamboo-franka-controller @ git+https://github.com/chsahit/bamboo.git@swe_mode"
+    "bamboo-franka-controller @ git+https://github.com/chsahit/bamboo.git"
 ]
 
 [project.optional-dependencies]
