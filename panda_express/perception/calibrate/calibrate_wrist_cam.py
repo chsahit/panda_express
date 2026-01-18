@@ -8,9 +8,9 @@ import cv2
 import numpy as np
 from cv2 import aruco
 from scipy.spatial.transform import Rotation as R
-from skills.go_to_conf import goto_hand_position
 from bamboo.client import BambooFrankaClient
-from perception.zed.zed_cam import ZedCamera
+from panda_express.skills.go_to_conf import goto_hand_position
+from panda_express.perception.zed.zed_cam import ZedCamera
 
 # Charuco Board Params #
 CHARUCOBOARD_ROWCOUNT = SQUARES_Y = 9
