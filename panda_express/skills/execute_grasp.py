@@ -19,10 +19,10 @@ def main():
     parser = argparse.ArgumentParser(description="Execute grasp from file")
     parser.add_argument('--grasp-file', type=str, required=True,
                         help='Path to .npz grasp file')
-    parser.add_argument('--server-ip', type=str, required=True,
+    parser.add_argument('--server-ip', type=str, default='192.168.1.3',
                         help='Robot server IP address')
     parser.add_argument('--extrinsics', type=str,
-                        default='perception/calibrate/X_WE.npy',
+                        default='/home/aditya/research/maggie/lis-franka-teleop-policy/calibration/X_WE.npy',
                         help='Path to X_WE.npy extrinsics file')
     parser.add_argument('--offset', type=float, default=0.05,
                         help='Vertical offset above grasp in meters (default: 0.05)')
@@ -94,7 +94,7 @@ def main():
 
             # 8. Calculate grasp pose (8cm below pre-grasp)
             T_world_grasp_final = T_world_pregrasp.copy()
-            T_world_grasp_final[2, 3] -= 0.08  # Move down 8cm
+            T_world_grasp_final[2, 3] -= 0.06  # Move down 8cm
             print(f"\nTarget grasp pose (8.0cm below pre-grasp):")
             print(T_world_grasp_final)
 
