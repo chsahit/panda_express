@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 import numpy as np
 import os
-import requests
+from importlib.resources import files
 from scipy.spatial.transform import Rotation as R
 
 from bamboo.client import BambooFrankaClient
@@ -103,7 +103,8 @@ def place_at(
     depth = cam.get_foundation_depth_frame()
     K = cam.get_intrinsics()[0]
     cam.close()
-    extrinsics = np.load("panda_express/perception/zed/X_WE.npy")
+    extrinsics_path = files("panda_express").joinpath("perception/zed/X_WE.npy")
+    extrinsics = np.load(extrinsics_path)
 
     # Call Gemini to point to the object described by the prompt.
     vlm_query_template = f"""You are given an image of a {text_prompt}. Return one point that lies on the surface of the {text_prompt} where an object can be placed.

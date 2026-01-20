@@ -7,6 +7,7 @@ import numpy as np
 import os
 import requests
 from scipy.spatial.transform import Rotation as R
+from importlib.resources import files
 
 from bamboo.client import BambooFrankaClient
 from panda_express.perception.zed.zed_cam import ZedCamera
@@ -322,7 +323,8 @@ def grasp_with_vlm(
     depth = cam.get_foundation_depth_frame()
     K = cam.get_intrinsics()[0]
     cam.close()
-    extrinsics = np.load("panda_express/perception/zed/X_WE.npy")
+    extrinsics_path = files("panda_express").joinpath("perception/zed/X_WE.npy")
+    extrinsics = np.load(extrinsics_path)
 
     # Call Gemini to point to the object described by the prompt.
     vlm_query_template = f"""

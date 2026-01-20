@@ -8,9 +8,9 @@ from scipy.spatial.transform import Rotation as R
 
 from bamboo.client import BambooFrankaClient
 from panda_express.perception.zed.zed_cam import ZedCamera
-from panda_express.perception.utils import pixel_to_world_xyz
+from panda_express.perception.utils.transform import pixel_to_world_xyz
 from panda_express.perception.utils.pretrained_model_interface import GoogleGeminiVLM
-from panda_express.skills.go_to_conf import goto_hand_position, TOP_DOWN_GRASP_ROT
+from panda_express.skills.go_to_conf import goto_hand_position, TOP_DOWN_GRASP_ROT, goto_joint_angles
 
 
 DEFAULT_WIPE_ONLINE_Z_OFFSET = 0.175
@@ -108,16 +108,7 @@ def get_bbox_from_gemini(
     return bbox
 
 
-def _compute_wipe_params_from_bbox_zed(
-    bbox: list[int],
-    depth_m: np.ndarray,
-    K_zed: np.ndarray,
-    T_world_zed: np.ndarray,
-    clearance: float = 0.08,
-    spacing_m: float = 0.05,
-    max_stroke_len: float = 0.35,
-):
-    """Compute wipe parameters from bbox"""
+def _bbox_zed_to_corners_world(bbox: list[int], depth_m, K_zed, T_world_zed):
     ymin, xmin, ymax, xmax = bbox
     p_br = (int(xmax), int(ymax))
     p_tr = (int(xmax), int(ymin))
@@ -127,8 +118,65 @@ def _compute_wipe_params_from_bbox_zed(
     P_tr = pixel_to_world_xyz(*p_tr, depth_m, K_zed, T_world_zed)
     P_bl = pixel_to_world_xyz(*p_bl, depth_m, K_zed, T_world_zed)
 
+    return P_br, P_tr, P_bl
 
-    # wipe_start_rotation = R.from_euler('y', np.pi/2 - 0.087)
+
+def _bbox_world_to_corners_world(bbox: list[list[float]]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Convert a list of 3D points (world frame) to bounding box corners.
+
+    Args:
+        bbox: List of 3D points (n x 3) in [x, y, z] order (world frame)
+              describing the wipe target region
+
+    Returns:
+        Tuple of (P_br, P_tr, P_bl) where each is a numpy array of shape (3,)
+        representing bottom-right, top-right, and bottom-left corners
+    """
+    points = np.array(bbox)
+
+    xmin, ymin = points[:, 0].min(), points[:, 1].min()
+    xmax, ymax = points[:, 0].max(), points[:, 1].max()
+    z_mean = points[:, 2].mean()
+
+    P_br = np.array([xmax, ymin, z_mean])  # bottom right
+    P_tr = np.array([xmax, ymax, z_mean])  # top right
+    P_bl = np.array([xmin, ymin, z_mean])  # bottom left
+
+    return P_br, P_tr, P_bl
+
+
+def _compute_wipe_params_from_bbox_zed(
+    bbox: list[int],
+    depth_m: np.ndarray,
+    K_zed: np.ndarray,
+    T_world_zed: np.ndarray,
+    clearance: float = 0.08,
+    spacing_m: float = 0.05,
+    max_stroke_len: float = 0.35,
+):
+    corners_world = _bbox_zed_to_corners_world(bbox, depth_m, K_zed, T_world_zed)
+    return _compute_wipe_params_from_corners_world(corners_world, clearance=clearance, spacing_m=spacing_m, max_stroke_len=max_stroke_len)
+
+
+def _compute_wipe_params_from_agent(
+    bbox: list[list[float]],
+    clearance: float = 0.08,
+    spacing_m: float = 0.05,
+    max_stroke_len: float = 0.35,
+):
+    corners_world = _bbox_world_to_corners_world(bbox)
+    return _compute_wipe_params_from_corners_world(corners_world, clearance=clearance, spacing_m=spacing_m, max_stroke_len=max_stroke_len)
+
+
+def _compute_wipe_params_from_corners_world(
+    corners_world,
+    clearance: float = 0.08,
+    spacing_m: float = 0.05,
+    max_stroke_len: float = 0.35,
+):
+    """Compute wipe parameters from bottom right, top right, bottom left of bbox in world frame"""
+    P_br, P_tr, P_bl = corners_world
     wipe_start_rotation = np.array([[1.0, 0.0, 0.0], [0.0, -1, 0], [-0.0, 0, -1.0]])
     wipe_start_pose = np.eye(4)
     wipe_start_pose[:3, :3] = TOP_DOWN_GRASP_ROT
@@ -208,14 +256,19 @@ def wipe_multiple_strokes(
 
 def wipe_online(
         robot: BambooFrankaClient,
-        rgb_image: np.ndarray,
-        depth_img: np.ndarray,
-        extrinsics: np.ndarray,
-        intrinsics: np.ndarray,
         vlm_query_template: str = DEFAULT_WIPE_VLM_QUERY_TEMPLATE,
         z_offset: float = DEFAULT_WIPE_ONLINE_Z_OFFSET,
         expand_percentage: float = 0.0
 ):
+    cam = ZedCamera(serial_number=35317039)
+    bgra = cam.get_bgra_frame()
+    rgb_image = cv2.cvtColor(bgra, cv2.COLOR_BGRA2RGB)
+    depth_img = cam.get_foundation_depth_frame()
+    intrinsics = cam.get_intrinsics()[0]
+    cam.close()
+    extrinsics_path = files("panda_express").joinpath("perception/zed/X_WE.npy")
+    extrinsics = np.load(extrinsics_path)
+
     rgb_pil = Image.fromarray(rgb_image)
 
     # save rgb for logging
@@ -273,6 +326,37 @@ def wipe_online(
         duration_per_stroke=1.5,
         num_attempts_per_stroke=1,
     )
+
+
+def wipe_bbox(robot, bbox: list[int], z_offset: float = DEFAULT_WIPE_ONLINE_Z_OFFSET):
+    (
+        wipe_start_pose,
+        stroke_dx,
+        stroke_dy,
+        delta_x_y_z_between_strokes,
+        num_strokes,
+        end_look_pose,
+    ) = _compute_wipe_params_from_agent(
+        bbox,
+        clearance=z_offset,
+        spacing_m=0.05,
+        max_stroke_len=0.35,
+    )
+    q_neutral = np.array([-0.0, -0.785398, 0.0, -2.356194, 0.0, 1.570796, -0.14])
+    goto_joint_angles(robot, q_neutral, 5)
+    wipe_multiple_strokes(
+        robot=robot,
+        wipe_start_pose=wipe_start_pose,
+        end_look_pose=end_look_pose,
+        stroke_dx=stroke_dx + 0.05,
+        stroke_dy=stroke_dy,
+        delta_x_y_z_between_strokes=delta_x_y_z_between_strokes,
+        num_strokes=num_strokes,
+        duration_per_stroke=1.5,
+        num_attempts_per_stroke=1,
+    )
+
+
 
 
 if __name__ == "__main__":
