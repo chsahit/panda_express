@@ -3,6 +3,7 @@ import shutil
 import numpy as np
 import json
 import cv2
+from importlib.resources import files
 from panda_express.perception.zed.zed_cam import ZedCamera
 
 def capture(dataset_name: str, capture_id: str = "0"):
@@ -12,7 +13,8 @@ def capture(dataset_name: str, capture_id: str = "0"):
     depth = cam.get_foundation_depth_frame()
     K = cam.get_intrinsics()[0]
     cam.close()
-    extrinsics = np.load("panda_express/perception/zed/X_WE.npy")
+    extrinsics_path = files("panda_express").joinpath("perception/zed/X_WE.npy")
+    extrinsics = np.load(extrinsics_path)
     json_dict = dict()
     for i in range(4):
         for j in range(4):
@@ -38,6 +40,7 @@ def capture(dataset_name: str, capture_id: str = "0"):
     # Convert depth from meters to millimeters and save as uint16
     depth_mm = (depth * 1000).astype("uint16")
     cv2.imwrite(f"{dataset_name}/keyframes/depth/{capture_id}.png", depth_mm)
+    
     print(f"{np.max(depth_mm)=}")
     print(f"{np.min(depth_mm)=}")
 
@@ -47,12 +50,12 @@ def capture(dataset_name: str, capture_id: str = "0"):
 
 
     # Create zip archive of the dataset folder
-    shutil.make_archive(dataset_name, 'zip', dataset_name)
-    print(f"Created {dataset_name}.zip")
+    # shutil.make_archive(dataset_name, 'zip', dataset_name)
+    # print(f"Created {dataset_name}.zip")
 
 if __name__ == "__main__":
-        capture("FR-WB1")
+        # capture("FR-WB1")
         # capture("FR-OC1")
-        # capture("FR-KB1")
+        capture("FR-KB1")
         # capture("FR-PB1")
         # capture("FR-MM1")

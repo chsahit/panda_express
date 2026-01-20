@@ -4,6 +4,7 @@
 """
 
 from typing import Optional, Literal, Tuple, List
+from importlib.resources import files
 
 import json
 import numpy as np
@@ -145,7 +146,8 @@ def push_button(
     Point to the center of the {label} in the image. Return a JSON list with exactly one element like
     [{{"point": [y, x]}}] with coordinates normalized to 0-1000.
     """
-    extrinsics = np.load("panda_express/perception/zed/X_WE.npy")
+    extrinsics_path = files("panda_express").joinpath("perception/zed/X_WE.npy")
+    extrinsics = np.load(extrinsics_path)
     center_pixel = get_single_pixel_from_gemini(vlm_query_center, pil)
     annotated_rgb_pil = overlay_pixels_on_image(annotated_rgb_pil, [center_pixel], color=(0, 0, 255), radius=3)
     annotated_rgb_pil.save(os.path.join(save_folderpath, f"annotated_rgb_{timestamp}.png"))

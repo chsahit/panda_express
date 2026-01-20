@@ -10,9 +10,9 @@ class ZedCamera:
         self.serial_number = serial_number
         standard_params = dict(
             depth_minimum_distance=0.1,
-            camera_resolution=sl.RESOLUTION.HD720,
+            camera_resolution=sl.RESOLUTION.HD1080,
             depth_stabilization=False,
-            camera_fps=60,
+            camera_fps=30,
             camera_image_flip=sl.FLIP_MODE.OFF,
         )
         init_params = sl.InitParameters(**standard_params)

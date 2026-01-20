@@ -100,14 +100,13 @@ def get_closest_m2t2_grasp(q_rob: np.ndarray, gemini_pt: np.ndarray, pcd: np.nda
     joint_space_distances = np.array(joint_space_distances)
     valid_indices = np.array(valid_indices)
 
-    # Sort by joint space distance and take top 5
     sorted_order = np.argsort(joint_space_distances)
     num_to_keep = min(3, len(sorted_order))
     closest_indices = valid_indices[sorted_order[:num_to_keep]]
 
     print(f"Filtered to {num_to_keep} grasps with smallest joint space distances: {joint_space_distances[sorted_order[:num_to_keep]]}")
 
-    # Among the 5 closest in joint space, find the one with highest confidence
+    # Among the 3 closest in joint space, find the one with highest confidence
     closest_confidences = all_confidences[closest_indices]
     print(f"{closest_confidences=}")
     best_idx_among_closest = np.argmax(closest_confidences)
@@ -379,5 +378,9 @@ def grasp_with_vlm(
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--text_prompt", type=str, default="blue mug", help="Text prompt for the object to grasp")
+    args = parser.parse_args()
     with BambooFrankaClient(server_ip="128.30.224.88") as rob:
-        grasp_with_vlm(rob, "blue mug")
+        grasp_with_vlm(rob, args.text_prompt, visualize=True)
