@@ -70,5 +70,5 @@ def depth_to_colored_pcd(rgb: np.ndarray, depth: np.ndarray, K: np.ndarray, T_wo
     # Transform to world frame
     points_world_h = (T_world_cam @ points_cam_h.T).T
 
-    # Return xyz and rgb colors
-    return points_world_h[:, :3], colors_valid
+    # Return xyz and rgb colors (normalized to [0, 1] range)
+    return points_world_h[:, :3], colors_valid.astype(np.float32) / 255.0

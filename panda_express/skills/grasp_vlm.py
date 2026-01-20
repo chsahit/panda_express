@@ -137,10 +137,11 @@ def m2t2_to_panda(m2t2_grasp: np.ndarray) -> np.ndarray:
     Transformation: Rotate -90° around Z to swap X and Y axes.
     """
     # Rotation matrix for -90° around Z-axis (swaps X→Y, Y→-X)
+    z_offset = -0.0634  # meters from link8 to gripper tip
     transform = np.array([
         [ 0, -1,  0,  0],
         [ 1,  0,  0,  0],
-        [ 0,  0,  1,  -0.1034],
+        [ 0,  0,  1,  z_offset],
         [ 0,  0,  0,  1]
     ])
     return m2t2_grasp @ transform
@@ -369,7 +370,7 @@ def grasp_with_vlm(
     else:
         X_WGoal = np.eye(4)
         X_WGoal[:3, :3] = TOP_DOWN_GRASP_ROT
-        X_WGoal[:3, 3] = pixel_xyz + np.array([0.0, 0.0, 0.15])
+        X_WGoal[:3, 3] = pixel_xyz + np.array([0.0, 0.0, 0.2])
     print(f"{X_WGoal=}")
 
     # go to grasp pose
@@ -383,4 +384,4 @@ if __name__ == "__main__":
     parser.add_argument("--text_prompt", type=str, default="blue mug", help="Text prompt for the object to grasp")
     args = parser.parse_args()
     with BambooFrankaClient(server_ip="128.30.224.88") as rob:
-        grasp_with_vlm(rob, args.text_prompt, visualize=True)
+        grasp_with_vlm(rob, args.text_prompt, visualize=True, use_m2t2=False)
