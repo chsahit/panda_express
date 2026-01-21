@@ -5,12 +5,14 @@ from datetime import datetime
 from PIL import Image
 import cv2
 from scipy.spatial.transform import Rotation as R
+import rerun as rr
 
 from bamboo.client import BambooFrankaClient
 from panda_express.perception.zed.zed_cam import ZedCamera
 from panda_express.perception.utils.transform import pixel_to_world_xyz
 from panda_express.perception.utils.pretrained_model_interface import GoogleGeminiVLM
 from panda_express.skills.go_to_conf import goto_hand_position, TOP_DOWN_GRASP_ROT, goto_joint_angles
+from importlib.resources import files
 
 
 DEFAULT_WIPE_ONLINE_Z_OFFSET = 0.175
@@ -280,8 +282,21 @@ def wipe_online(
 
     depth_m = depth_img.astype(np.float32)
     # Run VLM on the full-resolution RGB image and get bbox in RGB pixel coordinates.
+    gemini_structure = (
+        "If the desired property is not visible or it is ambiguous, return a bbox of null.\n\n"
+        "Output format (return EXACTLY one JSON object and nothing else):\n"
+        '{"bbox": [ymin, xmin, ymax, xmax] | null, "label": "spill"}\n'
+        "The bbox coordinates MUST be normalized to 0-1000 and are in [ymin, xmin, ymax, xmax] order.\n"
+    )
+    
+    vlm_query_template = vlm_query_template + "\n" + gemini_structure
+    print(f'vlm_query_template inside wipe_online: {vlm_query_template}')
+
     bbox = get_bbox_from_gemini(vlm_query_template, rgb_pil)
     print(f"The coordinates of the bounding box (RGB space) are: {bbox}")
+
+    # Visualize bbox in rerun
+    visualize_bbox_rerun(rgb_image, bbox, label="detection")
 
     # Optionally expand bbox in image space by a percentage along all directions
     if expand_percentage and expand_percentage > 0.0:
@@ -314,7 +329,8 @@ def wipe_online(
         spacing_m=0.05,
         max_stroke_len=0.35,
     )
-
+    q_neutral = np.array([-0.0, -0.785398, 0.0, -2.356194, 0.0, 1.570796, -0.14])
+    goto_joint_angles(robot, q_neutral, 5)
     wipe_multiple_strokes(
         robot=robot,
         wipe_start_pose=wipe_start_pose,
@@ -357,34 +373,43 @@ def wipe_bbox(robot, bbox: list[int], z_offset: float = DEFAULT_WIPE_ONLINE_Z_OF
     )
 
 
+def visualize_bbox_rerun(rgb_image: np.ndarray, bbox: list[int], label: str = "detection"):
+    """Visualize bounding box on image in rerun."""
+    rr.init("wipe_detection", spawn=True)
+
+    # Draw bbox on image: bbox is [ymin, xmin, ymax, xmax]
+    ymin, xmin, ymax, xmax = bbox
+    annotated_image = rgb_image.copy()
+
+    # Draw rectangle (color is RGB: red)
+    cv2.rectangle(annotated_image, (xmin, ymin), (xmax, ymax), (255, 0, 0), 3)
+
+    # Draw label background and text
+    cv2.putText(annotated_image, label, (xmin, ymin - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+
+    # Log the annotated RGB image
+    rr.log("camera/rgb_annotated", rr.Image(annotated_image))
+
+    # Also log the original image for comparison
+    rr.log("camera/rgb_original", rr.Image(rgb_image))
+
+    print(f"Visualized bbox: ymin={ymin}, xmin={xmin}, ymax={ymax}, xmax={xmax}")
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Run wipe_online with rerun visualization")
+    parser.add_argument("query", nargs="?", default="erase the citrus fruit on the whiteboard",
+                        help="VLM query for detection")
+    parser.add_argument("--robot-ip", default="128.30.224.88", help="Robot IP address")
+    args = parser.parse_args()
+
+    print(f"Running wipe_online with query: {args.query}")
+    with BambooFrankaClient(server_ip=args.robot_ip) as rob:
+        wipe_online(rob, vlm_query_template=args.query)
 
 
 if __name__ == "__main__":
-    """
-    with BambooFrankaClient(server_ip="128.30.224.88") as rob:
-        stroke_dx = 0.15
-        stroke_dy = 0.0
-        delta_x_y_z_between_strokes = np.array([0, 0.05, 0.0])
-        start_pose = np.array([[1.0, 0.0, 0.0, 0.4], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.6], [0, 0, 0, 1]])
-        wipe_multiple_strokes(
-            rob,
-            start_pose,
-            start_pose,
-            stroke_dx,
-            stroke_dy,
-            delta_x_y_z_between_strokes,
-            4,
-            1.0,
-            1
-        )
-    """
-    cam = ZedCamera(serial_number=35317039)
-    bgra = cam.get_bgra_frame()
-    rgb = cv2.cvtColor(bgra, cv2.COLOR_BGRA2RGB)
-    depth = cam.get_depth_frame()
-    K = cam.get_intrinsics()[0]
-    cam.close()
-    extrinsics = np.load("perception/zed/X_WE.npy")
-    with BambooFrankaClient(server_ip="128.30.224.88") as rob:
-        wipe_online(rob, rgb, depth, extrinsics, K)
+    main()
 

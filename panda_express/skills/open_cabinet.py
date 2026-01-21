@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import rerun as rr
 from typing import Tuple
 from PIL import Image
 from scipy.spatial.transform import Rotation as R
@@ -74,6 +75,26 @@ def draw_colored_pixels(image_pil: Image, pixels: list[Tuple[int, int]], path: s
     image_pil.save(path)
 
 
+def visualize_pixel_rerun(rgb_image: np.ndarray, pixel: Tuple[int, int], label: str = "handle"):
+    """Visualize a pixel point on image in rerun."""
+    rr.init("open_cabinet", spawn=True)
+
+    # Draw pixel on image
+    annotated_image = rgb_image.copy()
+    x, y = pixel[0], pixel[1]
+
+    # Draw a circle at the pixel location
+    cv2.circle(annotated_image, (x, y), 10, (255, 0, 0), -1)  # Filled red circle
+    cv2.circle(annotated_image, (x, y), 12, (255, 255, 255), 2)  # White outline
+    cv2.putText(annotated_image, label, (x + 15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+
+    # Log the annotated RGB image
+    rr.log("camera/rgb_annotated", rr.Image(annotated_image))
+    rr.log("camera/rgb_original", rr.Image(rgb_image))
+
+    print(f"Visualized pixel: x={x}, y={y}")
+
+
 def open_drawer(robot: BambooFrankaClient):
     robot.open_gripper()
 
@@ -100,9 +121,12 @@ def open_drawer(robot: BambooFrankaClient):
     if vlm_output_str == "No":
         return None
 
-	# Get a 2D pixel on the handle, and convert to 3D point
+    # Get a 2D pixel on the handle, and convert to 3D point
     handle_pixel = _get_pixel_from_gemini(prompt_get_handle_pixel, image_pil)
     draw_colored_pixels(image_pil, [handle_pixel], "image_logs/annotated_hand_camera_output.jpg", "red")
+
+    # Visualize in rerun
+    visualize_pixel_rerun(rgb, handle_pixel, label="handle")
     pixel_xyz = pixel_to_world_xyz(handle_pixel[0], handle_pixel[1], depth, K, extrinsics)
 
     pregrasp_xyz = pixel_xyz - np.array([0.25, 0.0, 0.0])
