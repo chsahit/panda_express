@@ -1,7 +1,7 @@
+import json
 from typing import List, Optional, Tuple
 
 import cv2
-import json
 import numpy as np
 import rerun as rr
 from PIL import Image
@@ -15,7 +15,12 @@ from panda_express.skills.go_to_conf import goto_hand_position
 from panda_express.skills.grasp_vlm import _get_pixel_from_gemini
 
 prompt_get_handle_pixel = """
-    Point to the CENTER (MIDDLE) of the TOP ORANGE handle of the drawer.
+    Point to the CENTER of the TOP ORANGE handle of the drawer.
+    The answer should follow the json format: [{"point": , "label": }, ...]. The points are in [y, x] format normalized to 0-1000.
+    """
+prompt_get_handle_pixels_multiple = """
+    Point to 5 points that are evenly spread across the ORANGE handle of the TOP drawer.
+    Make sure all points are on the handle itself, not on the drawer surface.
     The answer should follow the json format: [{"point": , "label": }, ...]. The points are in [y, x] format normalized to 0-1000.
     """
 prompt_get_drawer_surface_pixel = """
@@ -91,7 +96,7 @@ def get_multiple_pixels_from_gemini(
     Returns:
         List of (x, y) pixel coordinates
     """
-    vlm = GoogleGeminiVLM("gemini-2.0-flash")
+    vlm = GoogleGeminiVLM("gemini-2.5-pro")
 
     def parse_json_output(json_output_str: str) -> str:
         lines = json_output_str.splitlines()
@@ -313,6 +318,49 @@ def fit_plane_ransac(
     return centroid, normal, best_inlier_mask
 
 
+def compute_grasp_rotation_from_normal(
+    normal: np.ndarray,
+    world_up: np.ndarray = np.array([0.0, 0.0, 1.0]),
+) -> np.ndarray:
+    """Compute gripper rotation matrix from surface normal (Panda convention).
+
+    Based on CABINET_GRASPING_ROT, the Panda gripper convention is:
+    - Z-axis is the approach direction (points into the drawer)
+    - Y-axis points up (aligned with world Z)
+    - X-axis completes the right-handed frame
+
+    Args:
+        normal: (3,) unit normal vector pointing toward the robot/camera
+        world_up: (3,) world up direction (default Z-up)
+
+    Returns:
+        (3, 3) rotation matrix for the gripper orientation
+    """
+    # Gripper Z-axis points opposite to normal (approach direction into drawer)
+    z_axis = -normal
+    z_axis = z_axis / np.linalg.norm(z_axis)
+
+    # Gripper X-axis is perpendicular to both Z and world up
+    x_axis = np.cross(world_up, z_axis)
+    x_norm = np.linalg.norm(x_axis)
+
+    if x_norm < 1e-6:
+        # Normal is parallel to world_up, use a different reference
+        x_axis = np.cross(np.array([1.0, 0.0, 0.0]), z_axis)
+        x_norm = np.linalg.norm(x_axis)
+
+    x_axis = x_axis / x_norm
+
+    # Gripper Y-axis completes the right-handed frame
+    y_axis = np.cross(z_axis, x_axis)
+    y_axis = y_axis / np.linalg.norm(y_axis)
+
+    # Construct rotation matrix (columns are the axes)
+    rotation = np.column_stack([x_axis, y_axis, z_axis])
+
+    return rotation
+
+
 def generate_point_cloud_from_rgbd(
     rgb: np.ndarray,
     depth: np.ndarray,
@@ -477,9 +525,17 @@ def open_drawer(robot: BambooFrankaClient):
     if vlm_output_str == "No":
         return None
 
-    # Get a 2D pixel on the handle, and convert to 3D point
-    handle_pixel = _get_pixel_from_gemini(prompt_get_handle_pixel, image_pil)
-    draw_colored_pixels(image_pil, [handle_pixel], "image_logs/annotated_hand_camera_output.jpg", "red")
+    # Get multiple 2D pixels on the handle and average them for robust center estimate
+    handle_pixels = get_multiple_pixels_from_gemini(prompt_get_handle_pixels_multiple, image_pil, num_pixels=5)
+    draw_colored_pixels(image_pil, handle_pixels, "image_logs/annotated_hand_camera_output.jpg", "red")
+
+    # Average the pixels to get handle center
+    handle_pixel = (
+        int(np.mean([p[0] for p in handle_pixels])),
+        int(np.mean([p[1] for p in handle_pixels]))
+    )
+    print(f"Handle pixels: {handle_pixels}")
+    print(f"Averaged handle pixel: {handle_pixel}")
     pixel_xyz = pixel_to_world_xyz(handle_pixel[0], handle_pixel[1], depth, K, extrinsics)
 
     # Get pixels on surface of drawer via Gemini and compute surface normal
@@ -505,22 +561,35 @@ def open_drawer(robot: BambooFrankaClient):
         surface_normal=surface_normal,
     )
 
-    pregrasp_xyz = pixel_xyz - np.array([0.25, 0.0, 0.0])
+    # Project normal onto horizontal plane (zero out Z component)
+    # This ensures the robot pulls laterally, not at an angle from ground
+    print(f"Surface normal: {surface_normal}")
+    horizontal_normal = surface_normal.copy()
+    horizontal_normal[2] = 0.0
+    horizontal_normal = horizontal_normal / np.linalg.norm(horizontal_normal)
+    print(f"Horizontal normal: {horizontal_normal}")
+
+    # Compute gripper rotation aligned with the horizontal normal
+    grasp_rotation = compute_grasp_rotation_from_normal(horizontal_normal)
+    print(f"Grasp rotation:\n{grasp_rotation}")
+
+    # Compute positions along the horizontal normal
+    pregrasp_xyz = pixel_xyz + horizontal_normal * 0.25  # 25cm back along horizontal normal
     X_WPregrasp = np.eye(4)
-    X_WPregrasp[:3, :3] = CABINET_GRASPING_ROT
+    X_WPregrasp[:3, :3] = grasp_rotation
     X_WPregrasp[:3, 3] = pregrasp_xyz
 
-
-    grasp_xyz = pixel_xyz - np.array([0.16, 0.0, 0.0])
+    grasp_xyz = pixel_xyz + horizontal_normal * 0.16  # 16cm back along horizontal normal
     X_WGrasp = np.eye(4)
-    X_WGrasp[:3, :3] = CABINET_GRASPING_ROT
+    X_WGrasp[:3, :3] = grasp_rotation
     X_WGrasp[:3, 3] = grasp_xyz
 
     print(f"{X_WPregrasp=}")
-    goto_with_retries(robot, X_WPregrasp, 6.0, CABINET_GRASPING_ROT)
-    goto_with_retries(robot, X_WGrasp, 3.0, CABINET_GRASPING_ROT)
+    print(f"Pulling along horizontal normal: {horizontal_normal}")
+    goto_with_retries(robot, X_WPregrasp, 6.0, grasp_rotation)
+    goto_with_retries(robot, X_WGrasp, 3.0, grasp_rotation)
     robot.close_gripper()
-    goto_with_retries(robot, X_WPregrasp, 3.0, CABINET_GRASPING_ROT)
+    goto_with_retries(robot, X_WPregrasp, 3.0, grasp_rotation)  # Pull along normal
 
 
 if __name__ == "__main__":
