@@ -26,11 +26,11 @@ import numpy as np
 import os
 import argparse
 from datetime import datetime
-from skills.go_to_conf import goto_hand_position
+from panda_express.skills.go_to_conf import goto_hand_position
 from bamboo.client import BambooFrankaClient
 from scipy.spatial.transform import Rotation as R
-from perception.zed.zed_cam import ZedCamera
-from perception.realsense.realsense_cam import RealSenseCamera
+from panda_express.perception.zed.zed_cam import ZedCamera
+from panda_express.perception.realsense.realsense_cam import RealSenseCamera
 
 NUM_SAMPLES = 20
 
