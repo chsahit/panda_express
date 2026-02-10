@@ -4,6 +4,7 @@
 """
 
 from typing import Optional, Literal, Tuple, List
+from importlib.resources import files
 
 import json
 import numpy as np
@@ -12,10 +13,10 @@ import cv2
 import os
 from datetime import datetime
 from bamboo.client import BambooFrankaClient
-from perception.zed.zed_cam import ZedCamera
-from perception.utils.transform import pixel_to_world_xyz
-from skills.go_to_conf import goto_hand_position, TOP_DOWN_GRASP_ROT
-from perception.utils.pretrained_model_interface import GoogleGeminiVLM
+from panda_express.perception.zed.zed_cam import ZedCamera
+from panda_express.perception.utils.transform import pixel_to_world_xyz
+from panda_express.skills.go_to_conf import goto_hand_position, TOP_DOWN_GRASP_ROT
+from panda_express.perception.utils.pretrained_model_interface import GoogleGeminiVLM
 
 def overlay_pixels_on_image(
     image: Image.Image,
@@ -42,7 +43,8 @@ def get_multiple_pixels_from_gemini(
     Expects the model to respond with a JSON array like:
     [ {"point": [y, x]}, ... ] with coordinates normalized to [0, 1000].
     """
-    vlm = GoogleGeminiVLM("gemini-2.5-pro")
+    vlm = GoogleGeminiVLM("gemini-3-pro-preview")
+    # vlm = GoogleGeminiVLM("gemini-2.5-pro")
 
     def parse_json_output(json_output_str: str) -> str:
         lines = json_output_str.splitlines()
@@ -144,7 +146,8 @@ def push_button(
     Point to the center of the {label} in the image. Return a JSON list with exactly one element like
     [{{"point": [y, x]}}] with coordinates normalized to 0-1000.
     """
-    extrinsics = np.load("perception/zed/X_WE.npy")
+    extrinsics_path = files("panda_express").joinpath("perception/zed/X_WE.npy")
+    extrinsics = np.load(extrinsics_path)
     center_pixel = get_single_pixel_from_gemini(vlm_query_center, pil)
     annotated_rgb_pil = overlay_pixels_on_image(annotated_rgb_pil, [center_pixel], color=(0, 0, 255), radius=3)
     annotated_rgb_pil.save(os.path.join(save_folderpath, f"annotated_rgb_{timestamp}.png"))
@@ -163,7 +166,7 @@ def push_button(
 
 def main():
     with BambooFrankaClient(server_ip="128.30.224.88") as rob:
-        push_button(rob)
+        push_button(rob, label = "spacebar", z_clearance = 0.22)
 
 if __name__ == "__main__":
     main()

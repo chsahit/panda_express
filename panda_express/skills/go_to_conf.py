@@ -132,59 +132,57 @@ def goto_joint_angles(robot: BambooFrankaClient, q: np.ndarray, time: float) -> 
     return 0
 
 
-def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float,
-                      gripper_type: str = "robotiq") -> int:
-    """Move hand to specified pose using inverse kinematics.
-
-    Args:
-        rob: Robot client
-        X_WG: 4x4 target pose matrix
-        time: Movement duration in seconds
-        gripper_type: Gripper type - "robotiq" or "franka" (default: "robotiq")
-
-    Returns:
-        0 on success, 1 on failure
-    """
-    # Load appropriate robot model
+def rtb_IK(X_WG: np.ndarray, q0: np.ndarray, gripper_type: str = "robotiq", clean: bool = True):
     robot_model = load_robot_model(gripper_type)
+    if clean:
+        # Ensure X_WG is a proper 4x4 float64 contiguous array for SE3
+        X_WG_clean = np.asarray(X_WG, dtype=np.float64, order='C')
+        if X_WG_clean.shape != (4, 4):
+            raise ValueError(f"Expected 4x4 matrix, got shape {X_WG_clean.shape}")
 
-    s_current = rob.get_joint_states()
-    q_current = np.array(s_current["qpos"])
-    X_current = s_current["ee_pose"]
+        # Extract rotation and translation for SE3
+        R = X_WG_clean[:3, :3].copy()
+        t = X_WG_clean[:3, 3].copy()
 
-    # Ensure X_WG is a proper 4x4 float64 contiguous array for SE3
-    X_WG_clean = np.asarray(X_WG, dtype=np.float64, order='C')
-    if X_WG_clean.shape != (4, 4):
-        raise ValueError(f"Expected 4x4 matrix, got shape {X_WG_clean.shape}")
-
-    # Extract rotation and translation for SE3
-    R = X_WG_clean[:3, :3].copy()
-    t = X_WG_clean[:3, 3].copy()
-
-    # Ensure R is a proper rotation matrix (orthonormalize using SVD)
-    U, _, Vt = np.linalg.svd(R)
-    R_clean = U @ Vt
-
-    # Ensure det(R) = +1 (proper rotation, not reflection)
-    if np.linalg.det(R_clean) < 0:
-        Vt[-1, :] *= -1
+        # Ensure R is a proper rotation matrix (orthonormalize using SVD)
+        U, _, Vt = np.linalg.svd(R)
         R_clean = U @ Vt
 
-    # Create SE3 object from rotation matrix and translation vector
-    T_target = SE3.Rt(R_clean, t)
+        # Ensure det(R) = +1 (proper rotation, not reflection)
+        if np.linalg.det(R_clean) < 0:
+            Vt[-1, :] *= -1
+            R_clean = U @ Vt
+
+        # Create SE3 object from rotation matrix and translation vector
+        T_target = SE3.Rt(R_clean, t)
+    else:
+        T_target = SE3.Rt(X_WG[:3, :3].copy(), X_WG[:3, 3].copy())
+
     solution = robot_model.ik_LM(
         T_target,
-        q0=q_current[:7],  # Use current arm joint positions as initial guess
+        q0=q0[:7],  # Use provided joint positions as initial guess
         end="panda_link8",  # Target the end-effector frame (same as kEndEffector in libfranka)
         mask=[1, 1, 1, 1, 1, 1]  # Full 6-DOF constraint (x, y, z, roll, pitch, yaw)
     )
-
     if solution[1]:
-        q_next = solution[0]
-        return goto_joint_angles(rob, q_next, time)
+        return solution[0]
     else:
-        print(f"IK solution failed: {solution}")
-        raise RuntimeError("Failed to find IK solution")
+        return None
+
+
+def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float,
+                      gripper_type: str = "robotiq", n_ik_attempts: int = 5) -> int:
+    s_current = rob.get_joint_states()
+    q_current = np.array(s_current["qpos"])
+    for ik_attempt in range(n_ik_attempts):
+        ik_soln = rtb_IK(X_WG, q_current, gripper_type=gripper_type)
+        if ik_soln is not None:
+            break
+
+    if ik_soln is not None:
+        return goto_joint_angles(rob, ik_soln, time)
+    else:
+        return 1
 
 
 if __name__ == "__main__":

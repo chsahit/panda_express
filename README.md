@@ -10,3 +10,4 @@ pip install -e .  # force environment back to numpy<2
 pip install --no-deps /usr/local/zed/pyzed-5.0-cp310-cp310-linux_x86_64.whl  # reinstall zed bindings, but without upgrading numpy
 ```
 3. Setup M2T2 server. Follow the instructions at: https://github.com/williamshen-nz/M2T2
+3. Setup FoundatioStereo server. Follow the instructions at: https://github.com/williamshen-nz/FoundationStereo
