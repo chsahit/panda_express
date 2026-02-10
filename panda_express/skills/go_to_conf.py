@@ -132,7 +132,8 @@ def goto_joint_angles(robot: BambooFrankaClient, q: np.ndarray, time: float) -> 
 
 
 def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float,
-                      gripper_type: str = "robotiq") -> int:
+                      gripper_type: str = "robotiq",
+                      q_reference: np.ndarray = None) -> int:
     """Move hand to specified pose using inverse kinematics.
 
     Args:
@@ -140,6 +141,9 @@ def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float,
         X_WG: 4x4 target pose matrix
         time: Movement duration in seconds
         gripper_type: Gripper type - "robotiq" or "franka" (default: "robotiq")
+        q_reference: Optional 7D reference joint config for posture optimization.
+            IK solutions are scored by a blend of distance to q_current (reachability)
+            and distance to q_reference (posture). If None, only q_current is used.
 
     Returns:
         0 on success, 1 on failure
@@ -171,18 +175,63 @@ def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float,
 
     # Create SE3 object from rotation matrix and translation vector
     T_target = SE3.Rt(R_clean, t)
-    solution = robot_model.ik_LM(
-        T_target,
-        q0=q_current[:7],  # Use current arm joint positions as initial guess
-        end="panda_link8",  # Target the end-effector frame (same as kEndEffector in libfranka)
-        mask=[1, 1, 1, 1, 1, 1]  # Full 6-DOF constraint (x, y, z, roll, pitch, yaw)
-    )
 
-    if solution[1]:
-        q_next = solution[0]
-        return goto_joint_angles(rob, q_next, time)
+    MAX_JOINT_DIST = 1.0  # radians — reject IK solutions further than this (from q_current)
+    NUM_IK_RETRIES = 10   # number of random restarts to try
+    POSTURE_ALPHA = 0.35  # blend weight: 0=only posture, 1=only reachability
+
+    best_q = None
+    best_score = float("inf")
+    best_dist_current = float("inf")
+
+    for attempt in range(NUM_IK_RETRIES):
+        if attempt == 0:
+            q0 = q_current[:7]
+        else:
+            # Small random perturbation around current joints
+            q0 = q_current[:7] + np.random.randn(7) * 0.1
+
+        solution = robot_model.ik_LM(
+            T_target,
+            q0=q0,
+            end="panda_link8",
+            mask=[1, 1, 1, 1, 1, 1],
+        )
+
+        if solution[1]:
+            q_candidate = solution[0]
+            dist_current = np.linalg.norm(q_candidate - q_current[:7])
+
+            # Score: blend distance to current config (reachability) and
+            # distance to reference config (posture), if reference is provided.
+            if q_reference is not None:
+                dist_reference = np.linalg.norm(q_candidate - q_reference)
+                score = POSTURE_ALPHA * dist_current + (1 - POSTURE_ALPHA) * dist_reference
+            else:
+                score = dist_current
+
+            if score < best_score:
+                best_score = score
+                best_q = q_candidate
+                best_dist_current = dist_current
+                # Good enough — very close to current config
+                if dist_current < 0.3:
+                    break
+
+    if best_q is not None and best_dist_current <= MAX_JOINT_DIST:
+        if q_reference is not None:
+            dist_ref = np.linalg.norm(best_q - q_reference)
+            print(f"IK solved (attempt {attempt+1}, dist_current={best_dist_current:.4f}, dist_reference={dist_ref:.4f} rad)")
+        else:
+            print(f"IK solved (attempt {attempt+1}, joint_dist={best_dist_current:.4f} rad)")
+        return goto_joint_angles(rob, best_q, time)
+    elif best_q is not None:
+        print(f"IK best solution too far: joint_dist={best_dist_current:.4f} rad (max={MAX_JOINT_DIST})")
+        print(f"  q_current: {np.round(q_current[:7], 4)}")
+        print(f"  q_ik:      {np.round(best_q, 4)}")
+        raise RuntimeError(f"IK solution jumped to different configuration (joint_dist={best_dist_current:.2f} > {MAX_JOINT_DIST})")
     else:
-        print(f"IK solution failed: {solution}")
+        print(f"IK failed after {NUM_IK_RETRIES} attempts")
         raise RuntimeError("Failed to find IK solution")
 
 

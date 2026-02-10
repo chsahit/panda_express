@@ -135,21 +135,21 @@ def main():
 
             print("\n✓ Grasp execution complete!")
 
-            # 12. Move 30cm upward (lift)
-            T_world_lift = T_world_grasp_final.copy()
-            T_world_lift[2, 3] += 0.30  # Move up 30cm
-            print(f"\nTarget lift pose (30.0cm above grasp):")
-            print(T_world_lift)
+            # # 12. Move 30cm upward (lift)
+            # T_world_lift = T_world_grasp_final.copy()
+            # T_world_lift[2, 3] += 0.30  # Move up 30cm
+            # print(f"\nTarget lift pose (30.0cm above grasp):")
+            # print(T_world_lift)
 
-            print(f"\nMoving upward 30cm over 5.0 seconds...")
-            result = goto_hand_position(robot, T_world_lift, 5.0,
-                                       gripper_type=args.gripper_type)
+            # print(f"\nMoving upward 30cm over 5.0 seconds...")
+            # result = goto_hand_position(robot, T_world_lift, 5.0,
+            #                            gripper_type=args.gripper_type)
 
-            if result != 0:
-                print("✗ Failed to reach lift pose")
-                return 1
+            # if result != 0:
+            #     print("✗ Failed to reach lift pose")
+            #     return 1
 
-            print("✓ Successfully reached lift pose!")
+            # print("✓ Successfully reached lift pose!")
 
             # Get and print final lift position
             final_lift_state = robot.get_joint_states()
