@@ -31,7 +31,6 @@ from bamboo.client import BambooFrankaClient
 from scipy.spatial.transform import Rotation as R
 from perception.zed.zed_cam import ZedCamera
 from perception.realsense.realsense_cam import RealSenseCamera
-from glob import glob
 
 NUM_SAMPLES = 20
 
@@ -41,7 +40,7 @@ CHARUCO_BOARD = cv2.aruco.CharucoBoard((14, 9), 0.020, 0.015, ARUCO_DICT)
 detector_params = cv2.aruco.DetectorParameters()
 detector_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
 
-NUM_CORNER_THRESHOLD = 20  
+NUM_CORNER_THRESHOLD = 20
 
 # ============================================================================
 # Helper Functions
@@ -156,6 +155,7 @@ def main():
                         help='Bamboo server IP address')
     parser.add_argument('--wrist-camera-type', type=str, default='zed', choices=['realsense', 'zed'],
                         help='Wrist camera type')
+    parser.add_argument('--pre-move', action='store_true', help='move the robot to a pre-defined calibration pose')
     args = parser.parse_args()
 
     print("="*80)
@@ -175,10 +175,11 @@ def main():
 
     print("\nInitializing robot and cameras...")
     client = BambooFrankaClient(server_ip=args.server_ip, enable_gripper=False)
-    X_WG = np.array([[1.0, 0.0, 0.0, 0.3], [0.0, -1, 0.0, 0.2], [0.0, 0.0, -1.0, 0.7], [0, 0, 0, 1.0]])
-    X_GG2 = np.eye(4)
-    X_GG2[:3, :3] = R.from_euler('xyz', [np.pi/6, 0, 0], degrees=False).as_matrix()
-    # goto_hand_position(client, X_WG @ X_GG2, 3)
+    if args.pre_move:
+        X_WG = np.array([[1.0, 0.0, 0.0, 0.3], [0.0, -1, 0.0, 0.2], [0.0, 0.0, -1.0, 0.7], [0, 0, 0, 1.0]])
+        X_GG2 = np.eye(4)
+        X_GG2[:3, :3] = R.from_euler('xyz', [np.pi/6, 0, 0], degrees=False).as_matrix()
+        goto_hand_position(client, X_WG @ X_GG2, 3)
 
     if args.wrist_camera_type == 'realsense':
         wrist_camera = RealSenseCamera(serial_number="231122071284")

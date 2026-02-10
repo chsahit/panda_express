@@ -1,3 +1,4 @@
+import argparse
 import logging
 import numpy as np
 from pathlib import Path
@@ -187,7 +188,10 @@ def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float,
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='move robot to home configuration')
+    parser.add_argument('--server-ip', type=str, default='128.30.224.88',
+                        help='Robot IP address')
+    args = parser.parse_args()
     q_neutral = np.array([-0.0, -0.785398, 0.0, -2.356194, 0.0, 1.570796, -0.14])
-    # with BambooFrankaClient(server_ip="128.30.224.88") as rob:
-    with BambooFrankaClient(server_ip="192.168.1.3") as rob:
+    with BambooFrankaClient(server_ip=args.server_ip) as rob:
         goto_joint_angles(rob, q_neutral, 5)
