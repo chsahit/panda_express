@@ -102,8 +102,12 @@ class RealSenseCamera:
         # Initial frame
         self.get_bgra_frame()
 
-    def get_bgra_frame(self) -> np.ndarray:
+    def get_bgra_frame(self, warmup_frames: int = 5) -> np.ndarray:
         """Get BGRA frame (compatible with ZedCamera interface)."""
+        # Discard initial frames so auto-exposure / white-balance can settle
+        for _ in range(warmup_frames):
+            self.pipeline.wait_for_frames(timeout_ms=1000)
+
         frames = self.pipeline.wait_for_frames(timeout_ms=1000)
         aligned_frames = self.align.process(frames)
         color_frame = aligned_frames.get_color_frame()
