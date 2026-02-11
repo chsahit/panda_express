@@ -483,12 +483,12 @@ def calibrate_wrist_camera(camera_type='zed', serial_number=16779706, server_ip=
         server_ip: Bamboo/Franka server IP address
     """
     if camera_type == 'zed':
-        from perception.zed.zed_cam import ZedCamera
+        from panda_express.perception.zed.zed_cam import ZedCamera
         serial = int(serial_number) if isinstance(serial_number, str) else serial_number
         cam = ZedCamera(serial_number=serial)
         cam_id = serial
     elif camera_type == 'realsense':
-        from perception.realsense.realsense_cam import RealSenseCamera
+        from panda_express.perception.realsense.realsense_cam import RealSenseCamera
         serial = str(serial_number) if isinstance(serial_number, int) else serial_number
         cam = RealSenseCamera(serial_number=serial)
         cam_id = serial
