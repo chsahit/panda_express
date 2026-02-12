@@ -10,7 +10,6 @@ from cv2 import aruco
 from scipy.spatial.transform import Rotation as R
 from bamboo.client import BambooFrankaClient
 from panda_express.skills.go_to_conf import goto_hand_position
-from panda_express.perception.zed.zed_cam import ZedCamera
 
 # Charuco Board Params #
 CHARUCOBOARD_ROWCOUNT = SQUARES_Y = 9
@@ -475,14 +474,30 @@ class HandCameraCalibrator(CharucoDetector):
         return lin_success and rot_success
 
 
-def calibrate_wrist_camera():
-    """Calibrates the wrist (hand) camera."""
-    # Set up the camera, robot, and calibrator
-    cam = ZedCamera(serial_number=16779706)
-    cam_id = 16779706
+def calibrate_wrist_camera(camera_type='zed', serial_number=16779706, server_ip="128.30.224.88"):
+    """Calibrates the wrist (hand) camera.
+
+    Args:
+        camera_type: 'zed' or 'realsense'
+        serial_number: Camera serial number (int for ZED, str for RealSense)
+        server_ip: Bamboo/Franka server IP address
+    """
+    if camera_type == 'zed':
+        from panda_express.perception.zed.zed_cam import ZedCamera
+        serial = int(serial_number) if isinstance(serial_number, str) else serial_number
+        cam = ZedCamera(serial_number=serial)
+        cam_id = serial
+    elif camera_type == 'realsense':
+        from panda_express.perception.realsense.realsense_cam import RealSenseCamera
+        serial = str(serial_number) if isinstance(serial_number, int) else serial_number
+        cam = RealSenseCamera(serial_number=serial)
+        cam_id = serial
+    else:
+        raise ValueError(f"Unknown camera type: {camera_type}. Choose 'zed' or 'realsense'.")
 
     intrinsics, distortion = cam.get_intrinsics()
-    client = BambooFrankaClient(server_ip="128.30.224.88")
+    client = BambooFrankaClient(server_ip=server_ip, enable_gripper=False)
+    # client = BambooFrankaClient(server_ip=server_ip)
     calibrator = HandCameraCalibrator(intrinsics, distortion)
 
     # Setup motion planner. Hard-code the time_dilation_factor as the movements are small
@@ -594,7 +609,23 @@ def calibrate_wrist_camera():
 
 
 def calibrate_wrist_camera_entrypoint():
-    calibrate_wrist_camera()
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Calibrate wrist-mounted camera (ZED or RealSense)')
+    parser.add_argument('--camera-type', type=str, default='zed', choices=['zed', 'realsense'],
+                        help='Camera type: zed or realsense (default: zed)')
+    parser.add_argument('--serial', type=str, default='16779706',
+                        help='Camera serial number (default: 16779706 for ZED)')
+    parser.add_argument('--server-ip', type=str, default='128.30.224.88',
+                        help='Bamboo/Franka server IP address (default: 128.30.224.88)')
+
+    args = parser.parse_args()
+
+    calibrate_wrist_camera(
+        camera_type=args.camera_type,
+        serial_number=args.serial,
+        server_ip=args.server_ip
+    )
 
 
 if __name__ == "__main__":
