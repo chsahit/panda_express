@@ -612,37 +612,32 @@ def goto_hand_position_jacobian(rob: BambooFrankaClient, X_WG: np.ndarray, time:
                                 gripper_type: str = "robotiq",
                                 damping: float = 0.01,
                                 max_joint_delta: float = 0.5,
-                                max_iters: int = 200,
+                                max_iters: int = 100,
                                 pos_tol: float = 1e-4,
                                 rot_tol: float = 1e-3,
                                 nullspace_gain: float = 1.0,
-                                q_ref: np.ndarray = None) -> int:
-    """Move hand to specified pose using iterative Jacobian pseudoinverse IK.
+                                q_ref: np.ndarray = None,
+                                max_joint_dist: float = 1.5) -> int:
+    """Move hand to specified pose using hybrid Jacobian + LM IK.
 
-    Iteratively linearises the FK map and accumulates joint deltas until the
-    Cartesian error is below tolerance, then sends the final q_goal to the
-    robot in one trajectory.  Each iteration recomputes the Jacobian at the
-    *updated* (simulated) configuration, so the method converges even for
-    non-infinitesimal motions while staying near the current config.
-
-    A null-space posture term biases the redundant DOF toward q_ref (defaults
-    to Q_NEUTRAL) without affecting end-effector accuracy.
+    Phase 1 (Jacobian pseudoinverse): iteratively linearises the FK map with
+    null-space posture control to find a joint configuration near q_current.
+    Phase 2 (LM polish): uses the Jacobian result as the seed for
+    Levenberg-Marquardt IK to converge to the exact Cartesian target.
 
     Args:
         rob: Robot client
         X_WG: 4x4 target pose matrix
         time: Movement duration in seconds
         gripper_type: Gripper type - "robotiq" or "franka" (default: "robotiq")
-        damping: Damping factor for pseudoinverse (default: 0.05).
-        max_joint_delta: Maximum allowed joint delta norm per iteration in
-            radians (default: 0.5).
-        max_iters: Maximum number of Newton-style iterations (default: 50).
+        damping: Damping factor for Jacobian pseudoinverse (default: 0.01).
+        max_joint_delta: Maximum per-joint delta per Jacobian iteration (default: 0.5).
+        max_iters: Maximum Jacobian iterations (default: 100).
         pos_tol: Convergence tolerance for position error in metres (default: 1e-4).
         rot_tol: Convergence tolerance for rotation error in radians (default: 1e-3).
         nullspace_gain: Gain for null-space posture control (default: 1.0).
-            Higher values pull more aggressively toward q_ref.
-        q_ref: 7D reference joint configuration for null-space posture control.
-            Defaults to Q_NEUTRAL if not provided.
+        q_ref: 7D reference joint config for null-space. Defaults to Q_NEUTRAL.
+        max_joint_dist: Maximum allowed total joint distance from q_current (default: 1.5).
 
     Returns:
         0 on success, 1 on failure
@@ -679,8 +674,9 @@ def goto_hand_position_jacobian(rob: BambooFrankaClient, X_WG: np.ndarray, time:
     damping_matrix = (damping ** 2) * np.eye(6)
     I7 = np.eye(7)
 
-    # Iterative resolved-rate IK with null-space posture control
+    # ── Phase 1: Jacobian pseudoinverse (get near the solution) ──────
     q = q_current.copy()
+    jacobian_converged = False
     for it in range(max_iters):
         T_current = np.array(robot_model.fkine(q, end="panda_link8").A)
         twist_error = compute_twist_error(T_current, T_target)
@@ -689,6 +685,7 @@ def goto_hand_position_jacobian(rob: BambooFrankaClient, X_WG: np.ndarray, time:
         rot_error = np.linalg.norm(twist_error[3:])
 
         if pos_error < pos_tol and rot_error < rot_tol:
+            jacobian_converged = True
             print(f"Jacobian IK converged in {it} iters: "
                   f"pos_err={pos_error:.6f}m, rot_err={np.degrees(rot_error):.4f}°")
             break
@@ -701,8 +698,6 @@ def goto_hand_position_jacobian(rob: BambooFrankaClient, X_WG: np.ndarray, time:
         dq_task = J_pinv @ twist_error
 
         # Secondary task: pull toward q_ref in the null space
-        # Use UNDAMPED pseudoinverse for the projector so it's a true
-        # null-space projection (damped pinv leaks into the task space).
         J_pinv_true = np.linalg.pinv(J)
         N = I7 - J_pinv_true @ J
         dq_null = N @ (nullspace_gain * (q_ref - q))
@@ -718,16 +713,49 @@ def goto_hand_position_jacobian(rob: BambooFrankaClient, X_WG: np.ndarray, time:
 
         # Clamp to joint limits
         q = np.clip(q, joint_limits_lo + 0.01, joint_limits_hi - 0.01)
-    else:
-        print(f"Jacobian IK did NOT converge after {max_iters} iters: "
-              f"pos_err={pos_error:.4f}m, rot_err={np.degrees(rot_error):.2f}°")
+
+    if not jacobian_converged:
+        print(f"Jacobian IK stopped after {max_iters} iters: "
+              f"pos_err={pos_error:.4f}m, rot_err={np.degrees(rot_error):.2f}° — handing off to LM")
+
+    # ── Phase 2: LM polish (converge to exact target) ────────────────
+    if not jacobian_converged:
+        q_jacobian = q.copy()
+        q_lm = rtb_IK(X_WG_clean, q_jacobian, gripper_type=gripper_type)
+
+        if q_lm is not None:
+            dist_from_current = np.linalg.norm(q_lm - q_current)
+            dist_from_jacobian = np.linalg.norm(q_lm - q_jacobian)
+            if dist_from_current <= max_joint_dist:
+                print(f"LM polish converged: "
+                      f"dist_from_current={dist_from_current:.4f} rad, "
+                      f"dist_from_jacobian={dist_from_jacobian:.4f} rad")
+                q = q_lm
+            else:
+                print(f"LM solution too far from current config: "
+                      f"{dist_from_current:.4f} rad (max={max_joint_dist}). "
+                      f"Using Jacobian result.")
+        else:
+            print("LM polish failed to converge. Using Jacobian result.")
 
     total_dq = q - q_current
     joint_dist = np.linalg.norm(total_dq)
     print(f"  Joint delta: {np.round(total_dq, 4)}")
     print(f"  Joint delta norm: {joint_dist:.4f} rad ({np.degrees(joint_dist):.1f}°)")
 
-    return goto_joint_angles(rob, q, time)
+    # Scale trajectory duration so max joint velocity stays within safe limits.
+    # Use a conservative limit to avoid trajectory rejection by the
+    # impedance controller (which may have tighter limits than the robot's
+    # hardware velocity limits of ~2.1 rad/s).
+    MAX_JOINT_VEL = 0.5  # rad/s — conservative for impedance control
+    max_joint_delta = np.max(np.abs(total_dq))
+    min_time = max_joint_delta / MAX_JOINT_VEL
+    actual_time = max(time, min_time)
+    if actual_time > time:
+        print(f"  Scaled move time: {time:.2f}s → {actual_time:.2f}s "
+              f"(max joint delta {max_joint_delta:.3f} rad)")
+
+    return goto_joint_angles(rob, q, actual_time)
 
 
 def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float,
