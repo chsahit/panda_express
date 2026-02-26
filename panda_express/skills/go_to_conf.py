@@ -411,8 +411,10 @@ import argparse
 import logging
 import numpy as np
 from pathlib import Path
+from typing import Literal
 import roboticstoolbox as rtb
 from spatialmath import SE3
+from scipy.spatial.transform import Rotation
 
 from bamboo.client import BambooFrankaClient
 
@@ -427,6 +429,8 @@ URDF_MAP = {
 _MODEL_CACHE = {}
 
 TOP_DOWN_GRASP_ROT = np.array([[1.0, 0.0, 0.0], [0.0, -1, 0], [-0.0, 0, -1.0]])
+
+Q_NEUTRAL = np.array([-0.0, -0.785398, 0.0, -2.356194, 0.0, 1.570796, -0.14])
 
 
 def load_robot_model(gripper_type: str = "robotiq"):
@@ -579,17 +583,187 @@ def rtb_IK(X_WG: np.ndarray, q0: np.ndarray, gripper_type: str = "robotiq", clea
         return None
 
 
-def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float,
-                      gripper_type: str = "robotiq", n_ik_attempts: int = 5) -> int:
+def compute_twist_error(T_current: np.ndarray, T_target: np.ndarray) -> np.ndarray:
+    """Compute 6D twist error between current and target poses.
+
+    Args:
+        T_current: 4x4 current pose matrix
+        T_target: 4x4 target pose matrix
+
+    Returns:
+        6D twist error [e_pos (3), e_rot (3)] where e_rot is axis-angle
+    """
+    # Position error
+    e_pos = T_target[:3, 3] - T_current[:3, 3]
+
+    # Rotation error as axis-angle
+    R_current = T_current[:3, :3]
+    R_target = T_target[:3, :3]
+    R_error = R_target @ R_current.T
+
+    # Convert rotation matrix to axis-angle using scipy
+    rot = Rotation.from_matrix(R_error)
+    e_rot = rot.as_rotvec()  # axis-angle representation
+
+    return np.concatenate([e_pos, e_rot])
+
+
+def goto_hand_position_jacobian(rob: BambooFrankaClient, X_WG: np.ndarray, time: float,
+                                gripper_type: str = "robotiq",
+                                damping: float = 0.01,
+                                max_joint_delta: float = 0.5,
+                                max_iters: int = 200,
+                                pos_tol: float = 1e-4,
+                                rot_tol: float = 1e-3,
+                                nullspace_gain: float = 1.0,
+                                q_ref: np.ndarray = None) -> int:
+    """Move hand to specified pose using iterative Jacobian pseudoinverse IK.
+
+    Iteratively linearises the FK map and accumulates joint deltas until the
+    Cartesian error is below tolerance, then sends the final q_goal to the
+    robot in one trajectory.  Each iteration recomputes the Jacobian at the
+    *updated* (simulated) configuration, so the method converges even for
+    non-infinitesimal motions while staying near the current config.
+
+    A null-space posture term biases the redundant DOF toward q_ref (defaults
+    to Q_NEUTRAL) without affecting end-effector accuracy.
+
+    Args:
+        rob: Robot client
+        X_WG: 4x4 target pose matrix
+        time: Movement duration in seconds
+        gripper_type: Gripper type - "robotiq" or "franka" (default: "robotiq")
+        damping: Damping factor for pseudoinverse (default: 0.05).
+        max_joint_delta: Maximum allowed joint delta norm per iteration in
+            radians (default: 0.5).
+        max_iters: Maximum number of Newton-style iterations (default: 50).
+        pos_tol: Convergence tolerance for position error in metres (default: 1e-4).
+        rot_tol: Convergence tolerance for rotation error in radians (default: 1e-3).
+        nullspace_gain: Gain for null-space posture control (default: 1.0).
+            Higher values pull more aggressively toward q_ref.
+        q_ref: 7D reference joint configuration for null-space posture control.
+            Defaults to Q_NEUTRAL if not provided.
+
+    Returns:
+        0 on success, 1 on failure
+    """
+    robot_model = load_robot_model(gripper_type)
+
     s_current = rob.get_joint_states()
-    q_current = np.array(s_current["qpos"])
-    for ik_attempt in range(n_ik_attempts):
-        ik_soln = rtb_IK(X_WG, q_current, gripper_type=gripper_type)
-        if ik_soln is not None:
+    q_current = np.array(s_current["qpos"])[:7]
+
+    if q_ref is None:
+        q_ref = Q_NEUTRAL
+
+    # Clean up target pose
+    X_WG_clean = np.asarray(X_WG, dtype=np.float64, order='C')
+    if X_WG_clean.shape != (4, 4):
+        raise ValueError(f"Expected 4x4 matrix, got shape {X_WG_clean.shape}")
+
+    # Orthonormalize rotation matrix
+    R = X_WG_clean[:3, :3].copy()
+    U, _, Vt = np.linalg.svd(R)
+    R_clean = U @ Vt
+    if np.linalg.det(R_clean) < 0:
+        Vt[-1, :] *= -1
+        R_clean = U @ Vt
+
+    T_target = np.eye(4)
+    T_target[:3, :3] = R_clean
+    T_target[:3, 3] = X_WG_clean[:3, 3]
+
+    # Joint limits (approximate Franka limits)
+    joint_limits_lo = np.array([-2.90, -1.76, -2.90, -3.07, -2.90, -0.02, -2.90])
+    joint_limits_hi = np.array([ 2.90,  1.76,  2.90, -0.07,  2.90,  3.75,  2.90])
+
+    damping_matrix = (damping ** 2) * np.eye(6)
+    I7 = np.eye(7)
+
+    # Iterative resolved-rate IK with null-space posture control
+    q = q_current.copy()
+    for it in range(max_iters):
+        T_current = np.array(robot_model.fkine(q, end="panda_link8").A)
+        twist_error = compute_twist_error(T_current, T_target)
+
+        pos_error = np.linalg.norm(twist_error[:3])
+        rot_error = np.linalg.norm(twist_error[3:])
+
+        if pos_error < pos_tol and rot_error < rot_tol:
+            print(f"Jacobian IK converged in {it} iters: "
+                  f"pos_err={pos_error:.6f}m, rot_err={np.degrees(rot_error):.4f}°")
             break
 
-    if ik_soln is not None:
-        return goto_joint_angles(rob, ik_soln, time)
+        J = robot_model.jacob0(q, end="panda_link8")
+        JJT = J @ J.T
+        J_pinv = J.T @ np.linalg.inv(JJT + damping_matrix)
+
+        # Primary task: reach Cartesian target
+        dq_task = J_pinv @ twist_error
+
+        # Secondary task: pull toward q_ref in the null space
+        # Use UNDAMPED pseudoinverse for the projector so it's a true
+        # null-space projection (damped pinv leaks into the task space).
+        J_pinv_true = np.linalg.pinv(J)
+        N = I7 - J_pinv_true @ J
+        dq_null = N @ (nullspace_gain * (q_ref - q))
+
+        dq = dq_task + dq_null
+
+        # Clamp step size
+        max_dq = np.max(np.abs(dq))
+        if max_dq > max_joint_delta:
+            dq = dq * (max_joint_delta / max_dq)
+
+        q = q + dq
+
+        # Clamp to joint limits
+        q = np.clip(q, joint_limits_lo + 0.01, joint_limits_hi - 0.01)
+    else:
+        print(f"Jacobian IK did NOT converge after {max_iters} iters: "
+              f"pos_err={pos_error:.4f}m, rot_err={np.degrees(rot_error):.2f}°")
+
+    total_dq = q - q_current
+    joint_dist = np.linalg.norm(total_dq)
+    print(f"  Joint delta: {np.round(total_dq, 4)}")
+    print(f"  Joint delta norm: {joint_dist:.4f} rad ({np.degrees(joint_dist):.1f}°)")
+
+    return goto_joint_angles(rob, q, time)
+
+
+def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float,
+                      gripper_type: str = "robotiq", n_ik_attempts: int = 5,
+                      max_joint_dist: float = 1.0,
+                      ik_solver: Literal["jacobian_pinv", "ik_lm"] = "ik_lm") -> int:
+    if ik_solver == "jacobian_pinv":
+        return goto_hand_position_jacobian(rob, X_WG, time, gripper_type)
+
+    s_current = rob.get_joint_states()
+    q_current = np.array(s_current["qpos"])
+    best_soln = None
+    best_dist = float("inf")
+    for ik_attempt in range(n_ik_attempts):
+        if ik_attempt == 0:
+            q0 = q_current
+        else:
+            q0 = q_current.copy()
+            q0[:7] += np.random.randn(7) * 0.1
+        ik_soln = rtb_IK(X_WG, q0, gripper_type=gripper_type)
+        if ik_soln is not None:
+            dist = np.linalg.norm(ik_soln - q_current[:7])
+            if dist < best_dist:
+                best_dist = dist
+                best_soln = ik_soln
+            if dist < 0.3:
+                break
+
+    if best_soln is not None and best_dist <= max_joint_dist:
+        print(f"IK solved (joint_dist={best_dist:.4f} rad)")
+        return goto_joint_angles(rob, best_soln, time)
+    elif best_soln is not None:
+        raise RuntimeError(
+            f"IK solution too far from current config: joint_dist={best_dist:.2f} rad "
+            f"(max={max_joint_dist}). Skipping to avoid drastic motion."
+        )
     else:
         return 1
 
