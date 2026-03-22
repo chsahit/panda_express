@@ -140,7 +140,7 @@ class RealSenseCamera:
         self._depth_buffer = depth_m
         return self._depth_buffer
 
-    def get_foundation_depth_frame(self) -> np.ndarray:
+    def get_foundation_depth_frame(self, warmup_frames: int = 5) -> np.ndarray:
         """Get depth using FoundationStereo server instead of RealSense's built-in depth.
 
         Uses IR stereo pair for inference, then warps depth to the color frame.
@@ -148,6 +148,10 @@ class RealSenseCamera:
         """
         if self._foundation_stereo_url is None:
             raise RuntimeError("foundation_stereo_url was not provided at init")
+
+        # Discard initial frames so IR exposure can settle
+        for _ in range(warmup_frames):
+            self.pipeline.wait_for_frames(timeout_ms=1000)
 
         frames = self.pipeline.wait_for_frames(timeout_ms=1000)
 

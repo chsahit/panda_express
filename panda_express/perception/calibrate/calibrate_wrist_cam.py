@@ -550,7 +550,7 @@ def calibrate_wrist_camera(camera_type='zed', serial_number=16779706, server_ip=
 
     step_size = 0.15
     while True:
-        calib_pose = calibration_traj(i * step_size, hand_camera=True)
+        calib_pose = calibration_traj(i * step_size, pos_scale=0.05, hand_camera=True)
         desired_pose = change_pose_frame(calib_pose, pose_origin)
         desired_pose_mat4x4 = np.eye(4)
         desired_pose_mat4x4[:3, 3] = desired_pose[:3]
