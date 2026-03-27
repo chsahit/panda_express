@@ -252,7 +252,7 @@ def health() -> dict:
 # Startup / main
 # ---------------------------------------------------------------------------
 
-def _start_camera(serial_number: Optional[str], host: str, port: int) -> None:
+def _start_camera(serial_number: Optional[str], host: str, port: int, ir_exposure: int = 2000) -> None:
     global _K_ir, _K_color, _baseline, _T_color_from_ir, _color_size
 
     if not _REALSENSE_AVAILABLE:
@@ -278,6 +278,15 @@ def _start_camera(serial_number: Optional[str], host: str, port: int) -> None:
     device = profile.get_device()
     actual_serial = device.get_info(rs.camera_info.serial_number)
     print(f"Connected: {device.get_info(rs.camera_info.name)} (serial {actual_serial})")
+
+    # Configure IR sensor exposure
+    stereo_sensor = device.first_depth_sensor()
+    if ir_exposure > 0:
+        stereo_sensor.set_option(rs.option.enable_auto_exposure, 0)
+        stereo_sensor.set_option(rs.option.exposure, ir_exposure)
+        print(f"IR exposure set to {ir_exposure} µs (auto-exposure off)")
+    else:
+        print(f"IR auto-exposure enabled (current: {stereo_sensor.get_option(rs.option.exposure)} µs)")
 
     color_stream = profile.get_stream(rs.stream.color)
     color_intr = color_stream.as_video_stream_profile().get_intrinsics()
@@ -342,9 +351,12 @@ if __name__ == "__main__":
         "--foundation-stereo-url", default="http://localhost:1234",
         help="FoundationStereo server URL"
     )
+    parser.add_argument("--ir-exposure", type=int, default=2000,
+                        help="IR sensor exposure in microseconds (lower = less motion blur). "
+                             "Set to 0 to keep auto-exposure.")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
 
     _foundation_stereo_url = args.foundation_stereo_url
-    _start_camera(args.serial, args.host, args.port)
+    _start_camera(args.serial, args.host, args.port, args.ir_exposure)
