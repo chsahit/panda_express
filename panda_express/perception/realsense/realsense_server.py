@@ -217,12 +217,14 @@ def capture() -> Response:
         rgb = _state.rgb.copy()
         ir_left = _state.ir_left.copy()
         ir_right = _state.ir_right.copy()
+        capture_time = _state.timestamp
 
     depth_ir = _call_foundation_stereo(ir_left, ir_right)
     depth_color = _depth_ir_to_color(depth_ir)
 
     buf = io.BytesIO()
-    np.savez_compressed(buf, rgb=rgb, depth=depth_color)
+    np.savez_compressed(buf, rgb=rgb, depth=depth_color,
+                        capture_time=np.float64(capture_time))
     buf.seek(0)
     return Response(content=buf.read(), media_type="application/octet-stream")
 
@@ -252,7 +254,7 @@ def health() -> dict:
 # Startup / main
 # ---------------------------------------------------------------------------
 
-def _start_camera(serial_number: Optional[str], host: str, port: int, ir_exposure: int = 2000) -> None:
+def _start_camera(serial_number: Optional[str], host: str, port: int, ir_exposure: int = 0) -> None:
     global _K_ir, _K_color, _baseline, _T_color_from_ir, _color_size
 
     if not _REALSENSE_AVAILABLE:
@@ -351,7 +353,7 @@ if __name__ == "__main__":
         "--foundation-stereo-url", default="http://localhost:1234",
         help="FoundationStereo server URL"
     )
-    parser.add_argument("--ir-exposure", type=int, default=2000,
+    parser.add_argument("--ir-exposure", type=int, default=0,
                         help="IR sensor exposure in microseconds (lower = less motion blur). "
                              "Set to 0 to keep auto-exposure.")
     parser.add_argument("--host", default="0.0.0.0")
