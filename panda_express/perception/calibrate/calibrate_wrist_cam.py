@@ -71,7 +71,7 @@ def change_pose_frame(pose, frame, degrees=False):
     return result
 
 
-def calibration_traj(t, pos_scale=0.1, angle_scale=0.2, hand_camera=False):
+def calibration_traj(t, pos_scale=0.1, angle_scale=0.4, hand_camera=False):
     x = -np.abs(np.sin(3 * t)) * pos_scale
     y = -0.8 * np.sin(2 * t) * pos_scale
     z = 0.5 * np.sin(4 * t) * pos_scale
@@ -234,6 +234,8 @@ class CharucoDetector:
         )
 
         # Return Transformation #
+        print(f"[calibrate] reprojection error: {calibration_error:.4f} px "
+              f"({len(final_successes)} views, threshold={self.reprojection_error_threshold})")
         if calibration_error > self.reprojection_error_threshold:
             return None
         # print('Failed Calibration Threshold')
@@ -467,9 +469,11 @@ class HandCameraCalibrator(CharucoDetector):
         lin_success = np.all(lin_error < self.lin_error_threshold)
         rot_success = np.all(rot_error < self.rot_error_threshold)
 
-        # print('Pose Std: ', poses.std(axis=0))
-        # print('Lin Error: ', lin_error)
-        # print('Rot Error: ', rot_error)
+        print(f"[calibrate] train/test split validation ({len(test_poses)} test views):")
+        print(f"  pose std (over all samples): {poses.std(axis=0).round(4)}")
+        print(f"  lin error (MSE per axis): {lin_error.round(6)}  thresh={self.lin_error_threshold}")
+        print(f"  rot error (MSE per axis): {rot_error.round(6)}  thresh={self.rot_error_threshold}")
+        print(f"  lin pass={lin_success}, rot pass={rot_success}")
 
         return lin_success and rot_success
 
