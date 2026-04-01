@@ -243,12 +243,6 @@ def intrinsics() -> dict:
     }
 
 
-@app.get("/time")
-def server_time() -> dict:
-    """Return the server's current time.time() for clock synchronization."""
-    return {"time": time.time()}
-
-
 @app.get("/health")
 def health() -> dict:
     with _state.lock:
