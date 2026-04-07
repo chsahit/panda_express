@@ -23,6 +23,7 @@ import io
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 import cv2
@@ -31,6 +32,7 @@ import requests
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
+from PIL import Image
 
 try:
     import pyzed.sl as sl
@@ -61,6 +63,7 @@ _K: Optional[np.ndarray] = None
 _baseline: Optional[float] = None
 _image_size: Optional[tuple[int, int]] = None  # (H, W)
 _foundation_stereo_url: Optional[str] = None
+_gripper_mask: Optional[np.ndarray] = None  # (H, W) bool, True = gripper pixel
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +165,10 @@ def capture() -> Response:
 
     depth = _call_foundation_stereo(left_bgr, right_bgr)
 
+    # Mask out gripper pixels in depth
+    if _gripper_mask is not None:
+        depth[_gripper_mask] = 0.0
+
     buf = io.BytesIO()
     np.savez_compressed(buf, rgb=rgb, depth=depth,
                         capture_time=np.float64(capture_time))
@@ -194,8 +201,17 @@ def health() -> dict:
 # Startup / main
 # ---------------------------------------------------------------------------
 
-def _start_camera(serial_number: Optional[int], host: str, port: int) -> None:
-    global _K, _baseline, _image_size
+def _load_gripper_mask(mask_path: Path) -> Optional[np.ndarray]:
+    """Load gripper mask from a PNG file. Returns (H, W) bool array or None."""
+    if not mask_path.exists():
+        return None
+    mask = np.array(Image.open(mask_path)).astype(bool)
+    print(f"Loaded gripper mask from {mask_path} (shape {mask.shape})")
+    return mask
+
+
+def _start_camera(serial_number: Optional[int], host: str, port: int, gripper_mask_file: Optional[str] = None) -> None:
+    global _K, _baseline, _image_size, _gripper_mask
 
     if not _ZED_AVAILABLE:
         raise ImportError("pyzed (ZED SDK Python API) not installed.")
@@ -248,6 +264,14 @@ def _start_camera(serial_number: Optional[int], host: str, port: int) -> None:
     resolution = cam_info.camera_configuration.resolution
     _image_size = (resolution.height, resolution.width)
 
+    # Load gripper mask if provided
+    if gripper_mask_file is not None:
+        _gripper_mask = _load_gripper_mask(Path(gripper_mask_file))
+    else:
+        # Default: look for gripper_mask.png next to this file
+        default_path = Path(__file__).parent / "gripper_mask.png"
+        _gripper_mask = _load_gripper_mask(default_path)
+
     # Start background capture thread
     t = threading.Thread(target=_capture_loop, args=(zed,), daemon=True)
     t.start()
@@ -275,9 +299,11 @@ if __name__ == "__main__":
         "--foundation-stereo-url", default="http://localhost:1234",
         help="FoundationStereo server URL",
     )
+    parser.add_argument("--gripper-mask", default=None,
+                        help="Path to gripper mask PNG (default: gripper_mask.png next to this file)")
     parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
 
     _foundation_stereo_url = args.foundation_stereo_url
-    _start_camera(args.serial, args.host, args.port)
+    _start_camera(args.serial, args.host, args.port, args.gripper_mask)

@@ -36,6 +36,10 @@ dependencies = [
     "google-generativeai",
     "ImageHash",
     "bamboo-franka-controller @ git+https://github.com/chsahit/bamboo.git"
+    "pgraph-python",
+    "progress",
+    "rtb-data",
+    "ansitable"
 ]
 
 [project.optional-dependencies]
