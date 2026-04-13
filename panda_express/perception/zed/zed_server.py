@@ -42,6 +42,13 @@ except ImportError:
     sl = None
     _ZED_AVAILABLE = False
 
+try:
+    from sam3 import build_sam3_image_model
+    from sam3.model.sam3_image_processor import Sam3Processor
+    _SAM3_AVAILABLE = True
+except ImportError:
+    _SAM3_AVAILABLE = False
+
 
 # ---------------------------------------------------------------------------
 # Shared frame state
@@ -210,7 +217,97 @@ def _load_gripper_mask(mask_path: Path) -> Optional[np.ndarray]:
     return mask
 
 
-def _start_camera(serial_number: Optional[int], host: str, port: int, gripper_mask_file: Optional[str] = None) -> None:
+def _build_sam3_processor() -> "Sam3Processor":
+    """Build the SAM3 model and processor (expensive, do once)."""
+    import os
+    import sam3 as sam3_mod
+
+    modules_path = os.path.dirname(os.path.dirname(sam3_mod.__file__))
+    bpe_path = os.path.join(modules_path, "sam3/assets/bpe_simple_vocab_16e6.txt.gz")
+    print(f"Building SAM3 model (bpe_path={bpe_path})...")
+    sam3_model = build_sam3_image_model(bpe_path=bpe_path)
+    return Sam3Processor(sam3_model, confidence_threshold=0.1)
+
+
+def _bbox_from_mask(mask: np.ndarray, padding: float = 0.15) -> list[float]:
+    """Derive a normalized [cx, cy, w, h] bounding box from a bool mask with padding."""
+    rows = np.any(mask, axis=1)
+    cols = np.any(mask, axis=0)
+    y_min, y_max = np.where(rows)[0][[0, -1]]
+    x_min, x_max = np.where(cols)[0][[0, -1]]
+
+    h_img, w_img = mask.shape
+    # Add padding
+    pad_x = (x_max - x_min) * padding
+    pad_y = (y_max - y_min) * padding
+    x_min = max(0, x_min - pad_x)
+    x_max = min(w_img - 1, x_max + pad_x)
+    y_min = max(0, y_min - pad_y)
+    y_max = min(h_img - 1, y_max + pad_y)
+
+    # Normalize to [0, 1]
+    cx = (x_min + x_max) / 2.0 / w_img
+    cy = (y_min + y_max) / 2.0 / h_img
+    w = (x_max - x_min) / w_img
+    h = (y_max - y_min) / h_img
+    return [cx, cy, w, h]
+
+
+def _run_sam3_mask(processor: "Sam3Processor", rgb: np.ndarray,
+                   box_hint: Optional[list[float]] = None) -> np.ndarray:
+    """Run SAM3 inference on an RGB frame. Returns (H, W) bool mask.
+
+    Args:
+        box_hint: optional [cx, cy, w, h] normalized bounding box to guide segmentation.
+    """
+    pil_image = Image.fromarray(rgb)
+    inference_state = processor.set_image(pil_image)
+
+    # Set text prompt first, then refine with box
+    inference_state = processor.set_text_prompt(
+        state=inference_state, prompt="black machine"
+    )
+    if box_hint is not None:
+        inference_state = processor.add_geometric_prompt(
+            box=box_hint, label=True, state=inference_state
+        )
+
+    scores = inference_state.get("scores")
+    masks = inference_state.get("masks")  # [N, 1, H, W] bool
+
+    if masks is not None and masks.numel() > 0:
+        if scores is not None:
+            import torch
+            best_idx = scores.argmax().item()
+            combined = masks[best_idx, 0].cpu().numpy()
+        else:
+            combined = masks.squeeze(1).any(dim=0).cpu().numpy()
+    else:
+        combined = np.zeros(rgb.shape[:2], dtype=bool)
+
+    return combined
+
+
+def _sam3_mask_loop(processor: "Sam3Processor", interval: float,
+                    box_hint: Optional[list[float]] = None) -> None:
+    """Background thread: periodically re-segment the gripper and update _gripper_mask."""
+    global _gripper_mask
+    while True:
+        time.sleep(interval)
+        with _state.lock:
+            rgb = _state.rgb
+        if rgb is None:
+            continue
+        try:
+            _gripper_mask = _run_sam3_mask(processor, rgb.copy(), box_hint=box_hint)
+        except Exception as e:
+            print(f"SAM3 mask update failed: {e}")
+
+
+def _start_camera(serial_number: Optional[int], host: str, port: int,
+                   gripper_mask_file: Optional[str] = None,
+                   use_sam3_mask: bool = False,
+                   sam3_mask_interval: float = 5.0) -> None:
     global _K, _baseline, _image_size, _gripper_mask
 
     if not _ZED_AVAILABLE:
@@ -264,14 +361,6 @@ def _start_camera(serial_number: Optional[int], host: str, port: int, gripper_ma
     resolution = cam_info.camera_configuration.resolution
     _image_size = (resolution.height, resolution.width)
 
-    # Load gripper mask if provided
-    if gripper_mask_file is not None:
-        _gripper_mask = _load_gripper_mask(Path(gripper_mask_file))
-    else:
-        # Default: look for gripper_mask.png next to this file
-        default_path = Path(__file__).parent / "gripper_mask.png"
-        _gripper_mask = _load_gripper_mask(default_path)
-
     # Start background capture thread
     t = threading.Thread(target=_capture_loop, args=(zed,), daemon=True)
     t.start()
@@ -288,6 +377,40 @@ def _start_camera(serial_number: Optional[int], host: str, port: int, gripper_ma
     else:
         raise RuntimeError("Timed out waiting for first frame from camera.")
 
+    # Load gripper mask
+    if use_sam3_mask:
+        if not _SAM3_AVAILABLE:
+            raise ImportError("sam3 is required for --use-sam3-mask but is not installed.")
+        processor = _build_sam3_processor()
+        # Derive box hint from static mask if available
+        box_hint = None
+        reference_mask_path = Path(__file__).parent / "open_only_gripper_mask.png"
+        if gripper_mask_file is not None:
+            reference_mask_path = Path(gripper_mask_file)
+        if reference_mask_path.exists():
+            ref_mask = np.array(Image.open(reference_mask_path)).astype(bool)
+            if ref_mask.any():
+                box_hint = _bbox_from_mask(ref_mask)
+                print(f"SAM3 box hint from {reference_mask_path.name}: {box_hint}")
+        with _state.lock:
+            rgb_for_mask = _state.rgb.copy()
+        _gripper_mask = _run_sam3_mask(processor, rgb_for_mask, box_hint=box_hint)
+        # Start background thread to keep the mask up-to-date
+        mask_thread = threading.Thread(
+            target=_sam3_mask_loop,
+            args=(processor, sam3_mask_interval),
+            kwargs={"box_hint": box_hint},
+            daemon=True,
+        )
+        mask_thread.start()
+        print(f"SAM3 mask refresh thread started (interval={sam3_mask_interval}s)")
+    elif gripper_mask_file is not None:
+        _gripper_mask = _load_gripper_mask(Path(gripper_mask_file))
+    else:
+        # Default: look for gripper_mask.png next to this file
+        default_path = Path(__file__).parent / "gripper_mask.png"
+        _gripper_mask = _load_gripper_mask(default_path)
+
     print(f"Camera ready. Starting server at http://{host}:{port}")
     uvicorn.run(app, host=host, port=port)
 
@@ -301,9 +424,16 @@ if __name__ == "__main__":
     )
     parser.add_argument("--gripper-mask", default=None,
                         help="Path to gripper mask PNG (default: gripper_mask.png next to this file)")
+    parser.add_argument("--use-sam3-mask", action="store_true",
+                        help="Use SAM3 to dynamically segment the gripper "
+                             "instead of loading a static PNG mask")
+    parser.add_argument("--sam3-mask-interval", type=float, default=5.0,
+                        help="Seconds between SAM3 mask refreshes (default: 5)")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
 
     _foundation_stereo_url = args.foundation_stereo_url
-    _start_camera(args.serial, args.host, args.port, args.gripper_mask)
+    _start_camera(args.serial, args.host, args.port, args.gripper_mask,
+                   use_sam3_mask=args.use_sam3_mask,
+                   sam3_mask_interval=args.sam3_mask_interval)
