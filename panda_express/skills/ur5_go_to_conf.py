@@ -1,0 +1,212 @@
+import argparse
+import logging
+import numpy as np
+from pathlib import Path
+import roboticstoolbox as rtb
+from spatialmath import SE3
+
+from bamboo.client import BambooFrankaClient
+
+# URDF directory and mapping for different gripper types
+URDF_DIR = Path(__file__).parent / "urdfs"
+URDF_MAP = {
+    "robotiq": URDF_DIR / "fr3_robotiq_2f_85.urdf",
+    "franka": URDF_DIR / "panda_arm_hand.urdf",
+}
+
+# Cache for loaded models (lazy loading)
+_MODEL_CACHE = {}
+
+
+def load_robot_model(gripper_type: str = "robotiq"):
+    """Load and cache robot model for specified gripper type.
+
+    Args:
+        gripper_type: Gripper type - "robotiq" or "franka" (default: "robotiq")
+
+    Returns:
+        Robot model from roboticstoolbox
+
+    Raises:
+        ValueError: If gripper_type is not recognized
+        FileNotFoundError: If URDF file doesn't exist
+    """
+    if gripper_type not in URDF_MAP:
+        raise ValueError(f"Unknown gripper_type '{gripper_type}'. Options: {list(URDF_MAP.keys())}")
+
+    urdf_path = URDF_MAP[gripper_type]
+
+    if not urdf_path.exists():
+        raise FileNotFoundError(f"URDF file not found: {urdf_path}")
+
+    # Return cached model if already loaded
+    if urdf_path not in _MODEL_CACHE:
+        print(f"Loading robot model from: {urdf_path}")
+        _MODEL_CACHE[urdf_path] = rtb.Robot.URDF(str(urdf_path))
+
+    return _MODEL_CACHE[urdf_path]
+
+
+def list_available_grippers():
+    """List all available gripper types."""
+    return list(URDF_MAP.keys())
+
+
+def contactgraspnet_to_panda(cg_grasp: np.ndarray) -> np.ndarray:
+    """Convert ContactGraspNet grasp convention to Panda convention.
+
+    Applies -90° rotation around Z axis to align frame conventions,
+    then +45° rotation to compensate for panda_link8 to panda_hand offset.
+
+    Args:
+        cg_grasp: 4x4 grasp pose matrix in ContactGraspNet convention
+
+    Returns:
+        4x4 grasp pose matrix in Panda convention
+    """
+    # First: -90° rotation (ContactGraspNet to standard Panda convention)
+    transform_90 = np.array([
+        [ 0, -1,  0,  0],
+        [ 1,  0,  0,  0],
+        [ 0,  0,  1,  0],
+        [ 0,  0,  0,  1]
+    ])
+
+    # Second: +45° rotation to compensate for URDF panda_link8->panda_hand offset
+    angle = np.pi / 4  # +45 degrees
+    cos_a = np.cos(angle)
+    sin_a = np.sin(angle)
+    transform_45 = np.array([
+        [cos_a, -sin_a,  0,  0],
+        [sin_a,  cos_a,  0,  0],
+        [    0,      0,  1,  0],
+        [    0,      0,  0,  1]
+    ])
+
+    # Apply both transforms
+    return cg_grasp @ transform_90 @ transform_45
+
+
+def goto_joint_angles(robot: BambooFrankaClient, q: np.ndarray, time: float) -> int:
+    # Set up logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
+
+    try:
+        # Get current joint angles
+        current_joints = robot.get_joint_positions()
+
+        waypoints = [current_joints]
+        dt = 0.02
+        durations = [dt]
+        num_steps = int(time / dt)
+        for i in range(num_steps):
+            waypoint = current_joints + (i + 1) / num_steps * (q - current_joints)
+            waypoints.append(waypoint)
+            durations.append(dt)
+
+        print("\nSending trajectory to robot...")
+        result = robot.execute_joint_impedance_path(np.array(waypoints), durations=durations)
+
+        # Get final joint positions to calculate error
+        final_joints = robot.get_joint_positions()
+        print(f"Final joint angles: {[f'{q:.4f}' for q in final_joints]}")
+
+        # Calculate final position error (compare to last waypoint)
+        position_error = np.linalg.norm(np.array(final_joints) - np.array(waypoints[-1]))
+        print(f"Final position error: {position_error:.6f}")
+
+        if result['success']:
+            print("✓ Trajectory executed successfully!")
+        else:
+            print(f"✗ Trajectory failed: {result.get('error', 'Unknown error')}")
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+
+    return 0
+
+
+def rtb_IK(X_WG: np.ndarray, q0: np.ndarray, gripper_type: str = "robotiq", clean: bool = True):
+    robot_model = load_robot_model(gripper_type)
+    if clean:
+        # Ensure X_WG is a proper 4x4 float64 contiguous array for SE3
+        X_WG_clean = np.asarray(X_WG, dtype=np.float64, order='C')
+        if X_WG_clean.shape != (4, 4):
+            raise ValueError(f"Expected 4x4 matrix, got shape {X_WG_clean.shape}")
+
+        # Extract rotation and translation for SE3
+        R = X_WG_clean[:3, :3].copy()
+        t = X_WG_clean[:3, 3].copy()
+
+        # Ensure R is a proper rotation matrix (orthonormalize using SVD)
+        U, _, Vt = np.linalg.svd(R)
+        R_clean = U @ Vt
+
+        # Ensure det(R) = +1 (proper rotation, not reflection)
+        if np.linalg.det(R_clean) < 0:
+            Vt[-1, :] *= -1
+            R_clean = U @ Vt
+
+        # Create SE3 object from rotation matrix and translation vector
+        T_target = SE3.Rt(R_clean, t)
+    else:
+        T_target = SE3.Rt(X_WG[:3, :3].copy(), X_WG[:3, 3].copy())
+
+    solution = robot_model.ik_LM(
+        T_target,
+        q0=q0[:7],  # Use provided joint positions as initial guess
+        end="panda_link8",  # Target the end-effector frame (same as kEndEffector in libfranka)
+        mask=[1, 1, 1, 1, 1, 1]  # Full 6-DOF constraint (x, y, z, roll, pitch, yaw)
+    )
+    if solution[1]:
+        return solution[0]
+    else:
+        return None
+
+
+def goto_hand_position(rob: BambooFrankaClient, X_WG: np.ndarray, time: float,
+                      gripper_type: str = "robotiq", n_ik_attempts: int = 5,
+                      max_joint_dist: float = 1.0) -> int:
+    s_current = rob.get_joint_states()
+    q_current = np.array(s_current["qpos"])
+    best_soln = None
+    best_dist = float("inf")
+    for ik_attempt in range(n_ik_attempts):
+        if ik_attempt == 0:
+            q0 = q_current
+        else:
+            q0 = q_current.copy()
+            q0[:7] += np.random.randn(7) * 0.1
+        ik_soln = rtb_IK(X_WG, q0, gripper_type=gripper_type)
+        if ik_soln is not None:
+            dist = np.linalg.norm(ik_soln - q_current[:7])
+            if dist < best_dist:
+                best_dist = dist
+                best_soln = ik_soln
+            if dist < 0.3:
+                break
+
+    if best_soln is not None and best_dist <= max_joint_dist:
+        print(f"IK solved (joint_dist={best_dist:.4f} rad)")
+        return goto_joint_angles(rob, best_soln, time)
+    elif best_soln is not None:
+        raise RuntimeError(
+            f"IK solution too far from current config: joint_dist={best_dist:.2f} rad "
+            f"(max={max_joint_dist}). Skipping to avoid drastic motion."
+        )
+    else:
+        return 1
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='move robot to home configuration')
+    parser.add_argument('--server-ip', type=str, default='128.30.224.88',
+                        help='Robot IP address')
+    args = parser.parse_args()
+    q_neutral = np.array([-0.0, -0.785398, 0.0, -2.356194, 0.0, 1.570796, -0.14])
+    with BambooFrankaClient(server_ip=args.server_ip) as rob:
+        goto_joint_angles(rob, q_neutral, 5)
