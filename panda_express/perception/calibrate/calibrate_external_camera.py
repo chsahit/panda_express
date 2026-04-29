@@ -26,12 +26,33 @@ import numpy as np
 import os
 import argparse
 from datetime import datetime
-from skills.go_to_conf import goto_hand_position
-from bamboo.client import BambooFrankaClient
 from scipy.spatial.transform import Rotation as R
 from perception.zed.zed_cam import ZedCamera
 from perception.realsense.realsense_cam import RealSenseCamera
 from glob import glob
+
+# Robot backend selection. The hand-eye calibration here keeps the robot
+# fixed and only reads its EE pose — branch handles the differing client
+# constructor and EE-pose accessor between Bamboo (panda) and RTDE (UR5).
+ROBOT_TYPE = "ur5"  # "panda" or "ur5"
+
+if ROBOT_TYPE == "panda":
+    from bamboo.client import BambooFrankaClient
+
+    def make_client(ip):
+        return BambooFrankaClient(server_ip=ip, enable_gripper=False)
+
+    def get_ee_pose(client):
+        _ = client.get_joint_states()['ee_pose']  # flush
+        return np.array(client.get_joint_states()['ee_pose'])
+elif ROBOT_TYPE == "ur5":
+    from tiptop.ur5.ur5_client import UR5Client
+    from skills.ur5_go_to_conf import get_ee_pose
+
+    def make_client(ip):
+        return UR5Client(ip)
+else:
+    raise ValueError(f"Unknown ROBOT_TYPE: {ROBOT_TYPE!r}")
 
 NUM_SAMPLES = 20
 
@@ -174,7 +195,7 @@ def main():
     print(f"{X_GC=}")
 
     print("\nInitializing robot and cameras...")
-    client = BambooFrankaClient(server_ip=args.server_ip, enable_gripper=False)
+    client = make_client(args.server_ip)
     X_WG = np.array([[1.0, 0.0, 0.0, 0.3], [0.0, -1, 0.0, 0.2], [0.0, 0.0, -1.0, 0.7], [0, 0, 0, 1.0]])
     X_GG2 = np.eye(4)
     X_GG2[:3, :3] = R.from_euler('xyz', [np.pi/6, 0, 0], degrees=False).as_matrix()
@@ -189,8 +210,7 @@ def main():
     external_camera = ZedCamera(serial_number=args.external_serial)
     external_cam_matrix, external_dist_coeffs = external_camera.get_intrinsics()
 
-    X_WG = np.array(client.get_joint_states()['ee_pose'])
-    X_WG = np.array(client.get_joint_states()['ee_pose'])
+    X_WG = get_ee_pose(client)
 
     print(f"\nRobot gripper pose (KEEP FIXED):")
     print(X_WG)

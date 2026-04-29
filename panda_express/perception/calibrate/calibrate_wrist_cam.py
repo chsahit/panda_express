@@ -8,8 +8,37 @@ import cv2
 import numpy as np
 from cv2 import aruco
 from scipy.spatial.transform import Rotation as R
-from skills.go_to_conf import goto_hand_position
-from bamboo.client import BambooFrankaClient
+# Robot backend selection. Flip this to swap between panda (Bamboo) and UR5
+# (cuRobo + RTDE). The branch below pins down everything that differs:
+# client constructor, motion call, and how we read the current EE pose.
+ROBOT_TYPE = "ur5"  # "panda" or "ur5"
+
+if ROBOT_TYPE == "panda":
+    from bamboo.client import BambooFrankaClient
+    from skills.go_to_conf import goto_hand_position
+
+    def make_client(ip):
+        return BambooFrankaClient(server_ip=ip, enable_gripper=False)
+
+    def get_q(client):
+        # Discarded query before reading positions — the original "flush" hack.
+        _ = client.get_joint_states()['ee_pose']
+        return np.array(client.get_joint_positions())
+
+    def get_ee_pose(client):
+        _ = client.get_joint_states()['ee_pose']  # flush
+        return np.array(client.get_joint_states()['ee_pose'])
+elif ROBOT_TYPE == "ur5":
+    from tiptop.ur5.ur5_client import UR5Client
+    from skills.ur5_go_to_conf import goto_hand_position, get_ee_pose
+
+    def make_client(ip):
+        return UR5Client(ip)
+
+    def get_q(client):
+        return np.array(client.get_joint_positions())
+else:
+    raise ValueError(f"Unknown ROBOT_TYPE: {ROBOT_TYPE!r}")
 
 # Charuco Board Params #
 CHARUCOBOARD_ROWCOUNT = SQUARES_Y = 9
@@ -496,8 +525,7 @@ def calibrate_wrist_camera(camera_type='zed', serial_number=16779706, server_ip=
         raise ValueError(f"Unknown camera type: {camera_type}. Choose 'zed' or 'realsense'.")
 
     intrinsics, distortion = cam.get_intrinsics()
-    client = BambooFrankaClient(server_ip=server_ip, enable_gripper=False)
-    # client = BambooFrankaClient(server_ip=server_ip)
+    client = make_client(server_ip)
     calibrator = HandCameraCalibrator(intrinsics, distortion)
 
     # Setup motion planner. Hard-code the time_dilation_factor as the movements are small
@@ -528,13 +556,10 @@ def calibrate_wrist_camera(camera_type='zed', serial_number=16779706, server_ip=
             return
 
     def get_q_curr():
-        _ = client.get_joint_states()['ee_pose']
-        q_curr = np.array(client.get_joint_positions())
-        return q_curr
+        return get_q(client)
 
     def get_mat4x4():
-        _ = client.get_joint_states()['ee_pose']
-        return np.array(client.get_joint_states()['ee_pose'])
+        return get_ee_pose(client)
 
     # Bad hack for now, flush out the communication channel
     _log.debug("Attempting to flush out the buffer")
